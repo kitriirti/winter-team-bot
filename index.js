@@ -86,9 +86,7 @@ client.on('interactionCreate', async interaction => {
         '✅ Минимум 6 часов стабильного онлайна в день\n\n' +
         'Нажмите кнопку ниже, чтобы заполнить анкету.'
       )
-      .setColor(0xFF4500)
-      .setFooter({ text: 'WINTER TEAM • TICKET STACK 1' })
-      .setTimestamp();
+      .setColor(0xFF4500);
 
     const row = new ActionRowBuilder()
       .addComponents(
@@ -126,9 +124,7 @@ client.on('interactionCreate', async interaction => {
         '✅ Минимум 6 часов стабильного онлайна в день\n\n' +
         'Нажмите кнопку ниже, чтобы заполнить анкету.'
       )
-      .setColor(0x3498DB)
-      .setFooter({ text: 'WINTER TEAM • TICKET STACK 2' })
-      .setTimestamp();
+      .setColor(0x3498DB);
 
     const row = new ActionRowBuilder()
       .addComponents(
@@ -295,7 +291,7 @@ client.on('interactionCreate', async interaction => {
           createdAt: Date.now()
         });
 
-        // Компактный дизайн Embed
+        // Компактный дизайн Embed (БЕЗ ФУТЕРА И ВРЕМЕНИ)
         const applicationEmbed = new EmbedBuilder()
           .setColor(stackColor)
           .setThumbnail(user.displayAvatarURL({ dynamic: true }))
@@ -309,9 +305,7 @@ client.on('interactionCreate', async interaction => {
             `👂 **Готовность слушать:** ${listen}\n\n` +
             `**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n` +
             `📌 *Требования ${stackName}: ${stackHours} часов, ${stackAge} лет*`
-          )
-          .setFooter({ text: `WINTER TEAM • TICKET ${stackName} • ${user.tag}` })
-          .setTimestamp();
+          );
 
         // Кнопки управления
         const actionRow = new ActionRowBuilder()
@@ -400,8 +394,7 @@ client.on('interactionCreate', async interaction => {
       // ========== ПРИНЯТЬ ==========
       if (action === 'accept') {
         const embed = EmbedBuilder.from(originalEmbed)
-          .setColor(0x00FF00)
-          .setFooter({ text: `✅ Принят в ${stackName} • ${interaction.user.tag}` });
+          .setColor(0x00FF00);
         
         await interaction.update({ embeds: [embed], components: [] });
         await channel.send(`<@${targetUserId}> 🎉 **Поздравляем! Ваша заявка в ${stackName} ПРИНЯТА!** Свяжитесь с лидером.`);
@@ -439,9 +432,7 @@ client.on('interactionCreate', async interaction => {
                 `✅ Добро пожаловать в команду!\n\n` +
                 `🎮 Удачной игры!`
               )
-              .setColor(0x00FF00)
-              .setFooter({ text: 'WINTER TEAM • Добро пожаловать!' })
-              .setTimestamp();
+              .setColor(0x00FF00);
             
             await targetUser.send({ embeds: [dmEmbed] });
           } catch (error) {
@@ -454,8 +445,7 @@ client.on('interactionCreate', async interaction => {
       // ========== НА РАССМОТРЕНИЕ ==========
       else if (action === 'consider') {
         const embed = EmbedBuilder.from(originalEmbed)
-          .setColor(0xFFA500)
-          .setFooter({ text: `⏳ На рассмотрении (${stackName}) • ${interaction.user.tag}` });
+          .setColor(0xFFA500);
         
         await interaction.update({ embeds: [embed], components: [interaction.message.components[0]] });
         await channel.send(`<@${targetUserId}> Ваша заявка в **${stackName}** взята **НА РАССМОТРЕНИЕ**.`);
@@ -475,9 +465,7 @@ client.on('interactionCreate', async interaction => {
                 `✅ Ожидайте дальнейших уведомлений\n\n` +
                 `📌 Следите за каналом заявки!`
               )
-              .setColor(0xFFA500)
-              .setFooter({ text: 'WINTER TEAM • Ожидайте решения' })
-              .setTimestamp();
+              .setColor(0xFFA500);
             
             await targetUser.send({ embeds: [dmEmbed] });
           } catch (error) {
@@ -490,8 +478,7 @@ client.on('interactionCreate', async interaction => {
       // ========== НА ОБЗВОН ==========
       else if (action === 'call') {
         const embed = EmbedBuilder.from(originalEmbed)
-          .setColor(0x808080)
-          .setFooter({ text: `📞 Вызван на обзвон (${stackName}) • ${interaction.user.tag}` });
+          .setColor(0x808080);
         
         await interaction.update({ embeds: [embed], components: [interaction.message.components[0]] });
         await channel.send(`<@${targetUserId}> 📞 Вы **ВЫЗВАНЫ НА ОБЗВОН** в **${stackName}**. Будьте готовы к вопросам в войсе.`);
@@ -513,9 +500,7 @@ client.on('interactionCreate', async interaction => {
                 `📌 Зайдите в голосовой канал и ожидайте стаффа.\n` +
                 `⏰ У вас есть 10-15 минут, чтобы присоединиться!`
               )
-              .setColor(0x808080)
-              .setFooter({ text: 'WINTER TEAM • Не отвечайте на это сообщение' })
-              .setTimestamp();
+              .setColor(0x808080);
             
             await targetUser.send({ embeds: [dmEmbed] });
           } catch (error) {
@@ -528,8 +513,7 @@ client.on('interactionCreate', async interaction => {
       // ========== ОТКЛОНИТЬ ==========
       else if (action === 'deny') {
         const embed = EmbedBuilder.from(originalEmbed)
-          .setColor(0xFF0000)
-          .setFooter({ text: `❌ Отклонено (${stackName}) • ${interaction.user.tag}` });
+          .setColor(0xFF0000);
         
         await interaction.update({ embeds: [embed], components: [] });
         await channel.send(`<@${targetUserId}> 😔 Ваша заявка в **${stackName}** **ОТКЛОНЕНА**. Можете подать снова позже.`);
@@ -556,9 +540,7 @@ client.on('interactionCreate', async interaction => {
                 `✅ Улучшайте свои навыки и приходите снова!\n\n` +
                 `🍀 Удачи в поиске клана!`
               )
-              .setColor(0xFF0000)
-              .setFooter({ text: 'WINTER TEAM • Не расстраивайтесь!' })
-              .setTimestamp();
+              .setColor(0xFF0000);
             
             await targetUser.send({ embeds: [dmEmbed] });
           } catch (error) {
