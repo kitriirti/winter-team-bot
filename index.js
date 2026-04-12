@@ -65,7 +65,7 @@ client.on('interactionCreate', async interaction => {
   
   const cfg = getConfig();
   
-  // ========== КОМАНДА ДЛЯ СТАК 1 (3000 часов) ==========
+  // ========== КОМАНДА ДЛЯ СТАК 1 (3500 часов) ==========
   if (interaction.isCommand() && interaction.commandName === 'ticket_stack1') {
     
     if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
@@ -105,7 +105,7 @@ client.on('interactionCreate', async interaction => {
     });
   }
 
-  // ========== КОМАНДА ДЛЯ СТАК 2 (2000 часов) ==========
+  // ========== КОМАНДА ДЛЯ СТАК 2 (2500 часов) ==========
   if (interaction.isCommand() && interaction.commandName === 'ticket_stack2') {
     
     if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
@@ -191,7 +191,7 @@ client.on('interactionCreate', async interaction => {
       const ageInput = new TextInputBuilder()
         .setCustomId('age')
         .setLabel('Ваш возраст?')
-        .setPlaceholder(stackType === 'stack1' ? '15+ лет' : '15+ лет')
+        .setPlaceholder('15+ лет')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
         .setMaxLength(20);
@@ -263,7 +263,7 @@ client.on('interactionCreate', async interaction => {
         const stackColor = stackType === 'stack1' ? 0xFF4500 : 0x3498DB;
         const stackEmoji = stackType === 'stack1' ? '🔥' : '💧';
         const stackHours = stackType === 'stack1' ? '3500+' : '2500+';
-        const stackAge = stackType === 'stack1' ? '15+' : '15+';
+        const stackAge = '15+';
 
         // Создаём приватный канал
         const ticketChannel = await interaction.guild.channels.create({
@@ -602,11 +602,12 @@ client.login(token).catch(error => {
 
 // ========== HTTP СЕРВЕР ДЛЯ RENDER ==========
 const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/html' });
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(`
     <!DOCTYPE html>
     <html>
     <head>
+      <meta charset="utf-8">
       <title>WINTER TEAM Bot</title>
       <style>
         body { font-family: Arial; text-align: center; padding: 50px; background: #1a1a1a; color: white; }
