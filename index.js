@@ -26,8 +26,8 @@ const lastApplicationTime = new Collection();
 
 // Статистика (загружается из переменной окружения)
 let stats = {
-  stack1: { accepted: 0, denied: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() },
-  stack2: { accepted: 0, denied: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() }
+  stack1: { accepted: 0, denied: 0, autoDenied: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() },
+  stack2: { accepted: 0, denied: 0, autoDenied: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() }
 };
 
 // Загружаем статистику из переменной окружения
@@ -54,15 +54,11 @@ if (stats.stack2.weekStart < weekAgo) {
   stats.stack2.weekStart = Date.now();
 }
 
-// Функция сохранения статистики (выводит в консоль команду для Render)
+// Функция сохранения статистики
 function saveStats() {
   try {
     const statsJson = JSON.stringify(stats);
-    // Выводим команду для ручного обновления переменной в Render
     console.log(`📊 СТАТИСТИКА (скопируй для Render): STATS_DATA='${statsJson}'`);
-    
-    // Для Render: пробуем обновить переменную через API (не всегда работает)
-    // Поэтому просто выводим в консоль для ручного копирования
   } catch (error) {
     console.error('❌ Ошибка сохранения статистики:', error);
   }
@@ -77,7 +73,8 @@ const getConfig = () => {
     ticketCategory: process.env.TICKET_CATEGORY || config.ticketCategory,
     staffRoleId_stack1: process.env.STAFF_ROLE_STACK1 || config.staffRoleId_stack1,
     staffRoleId_stack2: process.env.STAFF_ROLE_STACK2 || config.staffRoleId_stack2,
-    logChannelId: process.env.LOG_CHANNEL_ID || config.logChannelId
+    logChannelId: process.env.LOG_CHANNEL_ID || config.logChannelId,
+    memberRoleId: process.env.MEMBER_ROLE_ID || config.memberRoleId // Роль для принятых участников
   };
 };
 
@@ -94,6 +91,24 @@ async function sendLog(channelId, embed) {
   } catch (error) {
     console.error('❌ Ошибка отправки лога:', error.message);
   }
+}
+
+// Функция для извлечения часов из текста
+function extractHours(text) {
+  // Ищем числа в тексте
+  const matches = text.match(/(\d+[\s,]?\d*)\s*(?:часов?|hours?|ч|h)/i);
+  if (matches) {
+    return parseInt(matches[1].replace(/[\s,]/g, ''));
+  }
+  
+  // Если не нашли по шаблону, ищем просто число
+  const numbers = text.match(/\d+/g);
+  if (numbers) {
+    // Берём самое большое число (скорее всего это часы)
+    return Math.max(...numbers.map(n => parseInt(n)));
+  }
+  
+  return 0;
 }
 
 client.once('ready', async () => {
@@ -146,7 +161,7 @@ client.once('ready', async () => {
   lastApplicationTime.clear();
   
   console.log('✅ Бот готов к работе!');
-  console.log(`📊 ТЕКУЩАЯ СТАТИСТИКА: СТАК1 принято=${stats.stack1.accepted} отклонено=${stats.stack1.denied} | СТАК2 принято=${stats.stack2.accepted} отклонено=${stats.stack2.denied}`);
+  console.log(`📊 ТЕКУЩАЯ СТАТИСТИКА: СТАК1 принято=${stats.stack1.accepted} отклонено=${stats.stack1.denied} автоотклонено=${stats.stack1.autoDenied || 0} | СТАК2 принято=${stats.stack2.accepted} отклонено=${stats.stack2.denied} автоотклонено=${stats.stack2.autoDenied || 0}`);
 });
 
 client.on('interactionCreate', async interaction => {
@@ -169,6 +184,7 @@ client.on('interactionCreate', async interaction => {
     const totalWeekAccepted = stats.stack1.weekAccepted + stats.stack2.weekAccepted;
     const totalWeekDenied = stats.stack1.weekDenied + stats.stack2.weekDenied;
     const totalWeek = totalWeekAccepted + totalWeekDenied;
+    const totalAutoDenied = (stats.stack1.autoDenied || 0) + (stats.stack2.autoDenied || 0);
     
     const statsEmbed = new EmbedBuilder()
       .setTitle('📊 СТАТИСТИКА ЗАЯВОК ЗА НЕДЕЛЮ')
@@ -192,7 +208,7 @@ client.on('interactionCreate', async interaction => {
         },
         {
           name: '📈 Всего за всё время',
-          value: `🔥 СТАК 1: принято **${stats.stack1.accepted}**, отклонено **${stats.stack1.denied}**\n💧 СТАК 2: принято **${stats.stack2.accepted}**, отклонено **${stats.stack2.denied}**`,
+          value: `🔥 СТАК 1: принято **${stats.stack1.accepted}**, отклонено **${stats.stack1.denied}**, автоотклонено **${stats.stack1.autoDenied || 0}**\n💧 СТАК 2: принято **${stats.stack2.accepted}**, отклонено **${stats.stack2.denied}**, автоотклонено **${stats.stack2.autoDenied || 0}**\n\n🤖 Всего автоотклонено: **${totalAutoDenied}**`,
           inline: false
         }
       )
@@ -400,6 +416,53 @@ client.on('interactionCreate', async interaction => {
       
       lastApplicationTime.set(`${user.id}_${stackType}`, Date.now());
       
+      // ========== АВТО-ОТКЛОНЕНИЕ ПО ЧАСАМ ==========
+      const hours = extractHours(steam);
+      const minHours = stackType === 'stack1' ? 3500 : 2500;
+      
+      if (hours > 0 && hours < minHours) {
+        // Автоотклонение
+        if (stackType === 'stack1') {
+          stats.stack1.denied++;
+          stats.stack1.weekDenied++;
+          stats.stack1.autoDenied = (stats.stack1.autoDenied || 0) + 1;
+        } else {
+          stats.stack2.denied++;
+          stats.stack2.weekDenied++;
+          stats.stack2.autoDenied = (stats.stack2.autoDenied || 0) + 1;
+        }
+        saveStats();
+        
+        const autoDenyEmbed = new EmbedBuilder()
+          .setTitle('❌ ЗАЯВКА ОТКЛОНЕНА АВТОМАТИЧЕСКИ')
+          .setDescription(
+            `**К сожалению, ваша заявка в клан WINTER TEAM была отклонена автоматически.**\n\n` +
+            `**Причина:** Недостаточно часов в Rust\n` +
+            `**Ваши часы:** ${hours}\n` +
+            `**Минимум для ${stackType === 'stack1' ? 'СТАК 1' : 'СТАК 2'}:** ${minHours}+ часов\n\n` +
+            `Вы можете подать заявку снова, когда наберёте нужное количество часов.`
+          )
+          .setColor(0xFF0000)
+          .setTimestamp();
+        
+        await interaction.reply({ embeds: [autoDenyEmbed], ephemeral: true });
+        
+        // Лог автоотклонения
+        const logEmbed = new EmbedBuilder()
+          .setTitle('🤖 Заявка отклонена автоматически')
+          .setColor(0xFF0000)
+          .addFields(
+            { name: '👤 Заявитель', value: `<@${user.id}> (${user.tag})`, inline: true },
+            { name: '📋 Состав', value: stackType === 'stack1' ? 'СТАК 1' : 'СТАК 2', inline: true },
+            { name: '⏰ Часы', value: `${hours} / ${minHours}`, inline: true },
+            { name: '📝 Причина', value: 'Недостаточно часов', inline: false }
+          )
+          .setTimestamp();
+        
+        await sendLog(cfg.logChannelId, logEmbed);
+        return;
+      }
+      
       await interaction.reply({
         content: '⏳ Обрабатываем вашу заявку...',
         ephemeral: true
@@ -448,7 +511,7 @@ client.on('interactionCreate', async interaction => {
             `**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n\n` +
             `👤 **Имя:** ${name}\n` +
             `🎂 **Возраст:** ${age}\n` +
-            `🎮 **Steam / Часы:** ${steam}\n` +
+            `🎮 **Steam / Часы:** ${steam} ${hours > 0 ? `(${hours} ч)` : ''}\n` +
             `🎯 **Желаемая роль:** ${role}\n` +
             `👂 **Готовность слушать:** ${listen}\n\n` +
             `**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n` +
@@ -531,7 +594,6 @@ client.on('interactionCreate', async interaction => {
         const stackName = stackType === 'stack1' ? 'СТАК 1' : 'СТАК 2';
         const stackEmoji = stackType === 'stack1' ? '🔥' : '💧';
         
-        // ОБНОВЛЯЕМ СТАТИСТИКУ
         if (stackType === 'stack1') {
           stats.stack1.denied++;
           stats.stack1.weekDenied++;
@@ -540,7 +602,6 @@ client.on('interactionCreate', async interaction => {
           stats.stack2.weekDenied++;
         }
         saveStats();
-        console.log(`📊 СТАТИСТИКА ОБНОВЛЕНА: СТАК1 отклонено=${stats.stack1.denied}, СТАК2 отклонено=${stats.stack2.denied}`);
         
         activeTickets.delete(`${targetUserId}_${stackType}`);
         
@@ -706,7 +767,19 @@ client.on('interactionCreate', async interaction => {
           stats.stack2.weekAccepted++;
         }
         saveStats();
-        console.log(`📊 СТАТИСТИКА ОБНОВЛЕНА: СТАК1 принято=${stats.stack1.accepted}, СТАК2 принято=${stats.stack2.accepted}`);
+        
+        // ========== ВЫДАЁМ РОЛЬ ==========
+        if (cfg.memberRoleId) {
+          try {
+            const member = await interaction.guild.members.fetch(targetUserId);
+            await member.roles.add(cfg.memberRoleId);
+            await channel.send(`✅ Роль <@&${cfg.memberRoleId}> выдана участнику.`);
+            console.log(`✅ Роль выдана пользователю ${targetUser?.tag}`);
+          } catch (error) {
+            console.error('❌ Ошибка выдачи роли:', error);
+            await channel.send(`⚠️ Не удалось выдать роль. Проверьте права бота.`);
+          }
+        }
         
         activeTickets.delete(`${targetUserId}_${stackType}`);
         
@@ -716,7 +789,8 @@ client.on('interactionCreate', async interaction => {
           .addFields(
             { name: '👤 Заявитель', value: `<@${targetUserId}> (${targetUser?.tag || targetUserId})`, inline: true },
             { name: '👮 Стафф', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
-            { name: '📋 Состав', value: stackName, inline: true }
+            { name: '📋 Состав', value: stackName, inline: true },
+            { name: '🎯 Роль', value: cfg.memberRoleId ? '✅ Выдана' : '❌ Не настроена', inline: true }
           )
           .setTimestamp();
         
