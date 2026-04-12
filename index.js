@@ -1,7 +1,5 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionFlagsBits, Collection } = require('discord.js');
 const http = require('http');
-const fs = require('fs');
-const path = require('path');
 
 // Загружаем конфиг (для локальной разработки)
 let config = {};
@@ -26,39 +24,45 @@ const activeTickets = new Collection();
 // Хранилище времени последней заявки (анти-спам)
 const lastApplicationTime = new Collection();
 
-// Путь к файлу статистики
-const statsPath = path.join(__dirname, 'stats.json');
-
-// Загружаем статистику из файла
+// Статистика (загружается из переменной окружения)
 let stats = {
-  stack1: { accepted: 0, denied: 0, total: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() },
-  stack2: { accepted: 0, denied: 0, total: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() }
+  stack1: { accepted: 0, denied: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() },
+  stack2: { accepted: 0, denied: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() }
 };
 
+// Загружаем статистику из переменной окружения
 try {
-  if (fs.existsSync(statsPath)) {
-    const loadedStats = JSON.parse(fs.readFileSync(statsPath, 'utf8'));
+  if (process.env.STATS_DATA) {
+    const loadedStats = JSON.parse(process.env.STATS_DATA);
     stats = loadedStats;
-    
-    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    if (stats.stack1.weekStart < weekAgo) {
-      stats.stack1.weekAccepted = 0;
-      stats.stack1.weekDenied = 0;
-      stats.stack1.weekStart = Date.now();
-    }
-    if (stats.stack2.weekStart < weekAgo) {
-      stats.stack2.weekAccepted = 0;
-      stats.stack2.weekDenied = 0;
-      stats.stack2.weekStart = Date.now();
-    }
+    console.log('✅ Статистика загружена из переменной окружения');
   }
 } catch (error) {
-  console.error('❌ Ошибка загрузки статистики:', error);
+  console.error('❌ Ошибка загрузки статистики из переменной:', error);
 }
 
+// Проверяем, не началась ли новая неделя
+const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+if (stats.stack1.weekStart < weekAgo) {
+  stats.stack1.weekAccepted = 0;
+  stats.stack1.weekDenied = 0;
+  stats.stack1.weekStart = Date.now();
+}
+if (stats.stack2.weekStart < weekAgo) {
+  stats.stack2.weekAccepted = 0;
+  stats.stack2.weekDenied = 0;
+  stats.stack2.weekStart = Date.now();
+}
+
+// Функция сохранения статистики (выводит в консоль команду для Render)
 function saveStats() {
   try {
-    fs.writeFileSync(statsPath, JSON.stringify(stats, null, 2));
+    const statsJson = JSON.stringify(stats);
+    // Выводим команду для ручного обновления переменной в Render
+    console.log(`📊 СТАТИСТИКА (скопируй для Render): STATS_DATA='${statsJson}'`);
+    
+    // Для Render: пробуем обновить переменную через API (не всегда работает)
+    // Поэтому просто выводим в консоль для ручного копирования
   } catch (error) {
     console.error('❌ Ошибка сохранения статистики:', error);
   }
@@ -77,25 +81,13 @@ const getConfig = () => {
   };
 };
 
-// Функция для отправки логов (ИСПРАВЛЕННАЯ)
+// Функция для отправки логов
 async function sendLog(channelId, embed) {
   try {
-    if (!channelId) {
-      console.log('⚠️ LOG_CHANNEL_ID не настроен, лог не отправлен');
-      return;
-    }
+    if (!channelId) return;
     
-    console.log(`📝 Отправка лога в канал ${channelId}`);
-    
-    const channel = await client.channels.fetch(channelId).catch(error => {
-      console.error(`❌ Канал ${channelId} не найден:`, error.message);
-      return null;
-    });
-    
-    if (!channel) {
-      console.error(`❌ Не удалось найти канал с ID ${channelId}`);
-      return;
-    }
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel) return;
     
     await channel.send({ embeds: [embed] });
     console.log(`✅ Лог отправлен в канал ${channel.name}`);
@@ -116,7 +108,6 @@ client.once('ready', async () => {
     const globalCommands = await client.application.commands.fetch();
     for (const command of globalCommands.values()) {
       await command.delete();
-      console.log(`🗑️ Удалена глобальная команда: ${command.name}`);
     }
     
     const guild = client.guilds.cache.get(cfg.guildId);
@@ -124,7 +115,6 @@ client.once('ready', async () => {
       const guildCommands = await guild.commands.fetch();
       for (const command of guildCommands.values()) {
         await command.delete();
-        console.log(`🗑️ Удалена команда сервера: ${command.name}`);
       }
     }
   } catch (error) {
@@ -155,23 +145,8 @@ client.once('ready', async () => {
   activeTickets.clear();
   lastApplicationTime.clear();
   
-  // ТЕСТ ЛОГОВ ПРИ ЗАПУСКЕ
-  setTimeout(async () => {
-    const currentCfg = getConfig();
-    console.log('🔍 ТЕСТ ЛОГОВ: LOG_CHANNEL_ID =', currentCfg.logChannelId || 'НЕ НАСТРОЕН');
-    
-    if (currentCfg.logChannelId) {
-      const testEmbed = new EmbedBuilder()
-        .setTitle('🧪 ТЕСТ ЛОГОВ')
-        .setDescription('Канал логов работает! Бот перезапущен.')
-        .setColor(0x00FF00)
-        .setTimestamp();
-      
-      await sendLog(currentCfg.logChannelId, testEmbed);
-    }
-  }, 3000);
-  
   console.log('✅ Бот готов к работе!');
+  console.log(`📊 ТЕКУЩАЯ СТАТИСТИКА: СТАК1 принято=${stats.stack1.accepted} отклонено=${stats.stack1.denied} | СТАК2 принято=${stats.stack2.accepted} отклонено=${stats.stack2.denied}`);
 });
 
 client.on('interactionCreate', async interaction => {
@@ -190,20 +165,6 @@ client.on('interactionCreate', async interaction => {
         ephemeral: true 
       });
     }
-    
-    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    
-    if (stats.stack1.weekStart < weekAgo) {
-      stats.stack1.weekAccepted = 0;
-      stats.stack1.weekDenied = 0;
-      stats.stack1.weekStart = Date.now();
-    }
-    if (stats.stack2.weekStart < weekAgo) {
-      stats.stack2.weekAccepted = 0;
-      stats.stack2.weekDenied = 0;
-      stats.stack2.weekStart = Date.now();
-    }
-    saveStats();
     
     const totalWeekAccepted = stats.stack1.weekAccepted + stats.stack2.weekAccepted;
     const totalWeekDenied = stats.stack1.weekDenied + stats.stack2.weekDenied;
@@ -316,7 +277,7 @@ client.on('interactionCreate', async interaction => {
     });
   }
 
-  // ========== ОБРАБОТКА КНОПОК (открытие модального окна) ==========
+  // ========== ОБРАБОТКА КНОПОК ==========
   if (interaction.isButton()) {
     
     let stackType = '';
@@ -416,7 +377,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ========== ОБРАБОТКА ОТПРАВКИ АНКЕТЫ ==========
+  // ========== ОБРАБОТКА МОДАЛЬНЫХ ОКОН ==========
   if (interaction.isModalSubmit()) {
     
     const customId = interaction.customId;
@@ -542,7 +503,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
     
-    // ========== ОБРАБОТКА МОДАЛЬНОГО ОКНА ПРИЧИНЫ ОТКЛОНЕНИЯ ==========
+    // ========== ПРИЧИНА ОТКЛОНЕНИЯ ==========
     if (customId.startsWith('deny_reason_')) {
       
       const parts = customId.split('_');
@@ -570,6 +531,7 @@ client.on('interactionCreate', async interaction => {
         const stackName = stackType === 'stack1' ? 'СТАК 1' : 'СТАК 2';
         const stackEmoji = stackType === 'stack1' ? '🔥' : '💧';
         
+        // ОБНОВЛЯЕМ СТАТИСТИКУ
         if (stackType === 'stack1') {
           stats.stack1.denied++;
           stats.stack1.weekDenied++;
@@ -578,6 +540,7 @@ client.on('interactionCreate', async interaction => {
           stats.stack2.weekDenied++;
         }
         saveStats();
+        console.log(`📊 СТАТИСТИКА ОБНОВЛЕНА: СТАК1 отклонено=${stats.stack1.denied}, СТАК2 отклонено=${stats.stack2.denied}`);
         
         activeTickets.delete(`${targetUserId}_${stackType}`);
         
@@ -612,7 +575,6 @@ client.on('interactionCreate', async interaction => {
           }
         }
         
-        // ЛОГ ОТКЛОНЕНИЯ
         const logEmbed = new EmbedBuilder()
           .setTitle('❌ Заявка отклонена')
           .setColor(0xFF0000)
@@ -671,7 +633,6 @@ client.on('interactionCreate', async interaction => {
       const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
       const channelName = channel?.name || 'Неизвестный канал';
       
-      // ЛОГ ЗАКРЫТИЯ
       const logEmbed = new EmbedBuilder()
         .setTitle('🔒 Тикет закрыт')
         .setColor(0x808080)
@@ -687,7 +648,6 @@ client.on('interactionCreate', async interaction => {
         try {
           if (channel) {
             await channel.delete();
-            console.log(`✅ Канал ${channel.name} закрыт вручную`);
           }
         } catch (error) {
           console.error('Ошибка закрытия канала:', error);
@@ -737,6 +697,7 @@ client.on('interactionCreate', async interaction => {
         await interaction.update({ embeds: [embed], components: [] });
         await channel.send(`<@${targetUserId}> 🎉 **Поздравляем! Ваша заявка в ${stackName} ПРИНЯТА!** Свяжитесь с лидером.`);
         
+        // ОБНОВЛЯЕМ СТАТИСТИКУ
         if (stackType === 'stack1') {
           stats.stack1.accepted++;
           stats.stack1.weekAccepted++;
@@ -745,10 +706,10 @@ client.on('interactionCreate', async interaction => {
           stats.stack2.weekAccepted++;
         }
         saveStats();
+        console.log(`📊 СТАТИСТИКА ОБНОВЛЕНА: СТАК1 принято=${stats.stack1.accepted}, СТАК2 принято=${stats.stack2.accepted}`);
         
         activeTickets.delete(`${targetUserId}_${stackType}`);
         
-        // ЛОГ ПРИНЯТИЯ
         const logEmbed = new EmbedBuilder()
           .setTitle('✅ Заявка принята')
           .setColor(0x00FF00)
@@ -766,7 +727,6 @@ client.on('interactionCreate', async interaction => {
             const channelToDelete = await client.channels.fetch(channel.id).catch(() => null);
             if (channelToDelete) {
               await channelToDelete.delete();
-              console.log(`✅ Канал ${channel.name} удалён через 12 часов после принятия`);
             }
           } catch (error) {
             console.error('Ошибка удаления канала по таймеру:', error);
@@ -794,7 +754,6 @@ client.on('interactionCreate', async interaction => {
             await targetUser.send({ embeds: [dmEmbed] });
           } catch (error) {
             console.error(`❌ Не удалось отправить ЛС пользователю ${targetUserId}:`, error);
-            await channel.send(`⚠️ Не удалось отправить уведомление в ЛС <@${targetUserId}>.`);
           }
         }
       } 
@@ -826,7 +785,6 @@ client.on('interactionCreate', async interaction => {
             await targetUser.send({ embeds: [dmEmbed] });
           } catch (error) {
             console.error(`❌ Не удалось отправить ЛС пользователю ${targetUserId}:`, error);
-            await channel.send(`⚠️ Не удалось отправить уведомление в ЛС <@${targetUserId}>.`);
           }
         }
       } 
@@ -860,7 +818,6 @@ client.on('interactionCreate', async interaction => {
             await targetUser.send({ embeds: [dmEmbed] });
           } catch (error) {
             console.error(`❌ Не удалось отправить ЛС пользователю ${targetUserId}:`, error);
-            await channel.send(`⚠️ Не удалось отправить уведомление в ЛС <@${targetUserId}>. Возможно, у него закрыты личные сообщения.`);
           }
         }
       } 
