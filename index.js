@@ -1,5 +1,7 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionFlagsBits, Collection } = require('discord.js');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 
 // Загружаем конфиг (для локальной разработки)
 let config = {};
@@ -21,6 +23,46 @@ const client = new Client({
 // Хранилище активных тикетов (в памяти)
 const activeTickets = new Collection();
 
+// Путь к файлу статистики
+const statsPath = path.join(__dirname, 'stats.json');
+
+// Загружаем статистику из файла
+let stats = {
+  stack1: { accepted: 0, denied: 0, total: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() },
+  stack2: { accepted: 0, denied: 0, total: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() }
+};
+
+try {
+  if (fs.existsSync(statsPath)) {
+    const loadedStats = JSON.parse(fs.readFileSync(statsPath, 'utf8'));
+    stats = loadedStats;
+    
+    // Проверяем, не началась ли новая неделя
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    if (stats.stack1.weekStart < weekAgo) {
+      stats.stack1.weekAccepted = 0;
+      stats.stack1.weekDenied = 0;
+      stats.stack1.weekStart = Date.now();
+    }
+    if (stats.stack2.weekStart < weekAgo) {
+      stats.stack2.weekAccepted = 0;
+      stats.stack2.weekDenied = 0;
+      stats.stack2.weekStart = Date.now();
+    }
+  }
+} catch (error) {
+  console.error('❌ Ошибка загрузки статистики:', error);
+}
+
+// Сохраняем статистику в файл
+function saveStats() {
+  try {
+    fs.writeFileSync(statsPath, JSON.stringify(stats, null, 2));
+  } catch (error) {
+    console.error('❌ Ошибка сохранения статистики:', error);
+  }
+}
+
 // Получаем настройки из переменных окружения или config.json
 const getConfig = () => {
   return {
@@ -37,7 +79,7 @@ client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} успешно запущен!`);
   
   // Устанавливаем статус
-  client.user.setActivity('заявки в клан WT', { type: 3 }); // WATCHING
+  client.user.setActivity('заявки в клан WT', { type: 3 });
   
   try {
     await client.application.commands.create({
@@ -50,14 +92,17 @@ client.once('ready', async () => {
       description: 'Создать сообщение для подачи заявок в СТАК 2 (2500+ часов)'
     });
     
-    console.log('✅ Команды /ticket_stack1 и /ticket_stack2 зарегистрированы!');
+    await client.application.commands.create({
+      name: 'stats',
+      description: 'Показать статистику заявок за неделю (только для стаффа)'
+    });
+    
+    console.log('✅ Команды зарегистрированы!');
   } catch (error) {
     console.error('❌ Ошибка регистрации команд:', error);
   }
   
-  // Очищаем хранилище тикетов
   activeTickets.clear();
-  console.log('✅ Хранилище тикетов очищено');
   console.log('✅ Бот готов к работе!');
 });
 
@@ -65,7 +110,71 @@ client.on('interactionCreate', async interaction => {
   
   const cfg = getConfig();
   
-  // ========== КОМАНДА ДЛЯ СТАК 1 (3500 часов) ==========
+  // ========== КОМАНДА /stats ==========
+  if (interaction.isCommand() && interaction.commandName === 'stats') {
+    
+    // Проверяем, есть ли у пользователя ЛЮБАЯ роль стаффа
+    const hasStaffRole = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || 
+                         interaction.member.roles.cache.has(cfg.staffRoleId_stack2);
+    
+    if (!hasStaffRole && !interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ 
+        content: '❌ У вас нет прав для просмотра статистики!', 
+        ephemeral: true 
+      });
+    }
+    
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    
+    // Проверяем и сбрасываем статистику если нужно
+    if (stats.stack1.weekStart < weekAgo) {
+      stats.stack1.weekAccepted = 0;
+      stats.stack1.weekDenied = 0;
+      stats.stack1.weekStart = Date.now();
+    }
+    if (stats.stack2.weekStart < weekAgo) {
+      stats.stack2.weekAccepted = 0;
+      stats.stack2.weekDenied = 0;
+      stats.stack2.weekStart = Date.now();
+    }
+    saveStats();
+    
+    const totalWeekAccepted = stats.stack1.weekAccepted + stats.stack2.weekAccepted;
+    const totalWeekDenied = stats.stack1.weekDenied + stats.stack2.weekDenied;
+    const totalWeek = totalWeekAccepted + totalWeekDenied;
+    
+    const statsEmbed = new EmbedBuilder()
+      .setTitle('📊 СТАТИСТИКА ЗАЯВОК ЗА НЕДЕЛЮ')
+      .setColor(0x3498DB)
+      .setDescription('**Статистика за последние 7 дней**')
+      .addFields(
+        { 
+          name: '🔥 СТАК 1 (3500+ часов)', 
+          value: `✅ Принято: **${stats.stack1.weekAccepted}**\n❌ Отклонено: **${stats.stack1.weekDenied}**\n📋 Всего: **${stats.stack1.weekAccepted + stats.stack1.weekDenied}**`,
+          inline: true 
+        },
+        { 
+          name: '💧 СТАК 2 (2500+ часов)', 
+          value: `✅ Принято: **${stats.stack2.weekAccepted}**\n❌ Отклонено: **${stats.stack2.weekDenied}**\n📋 Всего: **${stats.stack2.weekAccepted + stats.stack2.weekDenied}**`,
+          inline: true 
+        },
+        {
+          name: '━━━━━━━━━━━━━━━━━━',
+          value: `🎯 **ОБЩИЙ ИТОГ:**\n✅ Принято: **${totalWeekAccepted}**\n❌ Отклонено: **${totalWeekDenied}**\n📋 Всего заявок: **${totalWeek}**`,
+          inline: false
+        },
+        {
+          name: '📈 Всего за всё время',
+          value: `🔥 СТАК 1: принято **${stats.stack1.accepted}**, отклонено **${stats.stack1.denied}**\n💧 СТАК 2: принято **${stats.stack2.accepted}**, отклонено **${stats.stack2.denied}**`,
+          inline: false
+        }
+      )
+      .setTimestamp();
+    
+    await interaction.reply({ embeds: [statsEmbed], ephemeral: true });
+  }
+  
+  // ========== КОМАНДА ДЛЯ СТАК 1 ==========
   if (interaction.isCommand() && interaction.commandName === 'ticket_stack1') {
     
     if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
@@ -86,14 +195,14 @@ client.on('interactionCreate', async interaction => {
         '● Минимум 6 часов стабильного онлайна в день\n\n' +
         'Нажмите кнопку ниже, чтобы заполнить анкету.'
       )
-      .setColor(0x3498DB); // Синий цвет
+      .setColor(0x3498DB);
 
     const row = new ActionRowBuilder()
       .addComponents(
         new ButtonBuilder()
           .setCustomId('create_ticket_stack1')
           .setLabel('📝 Подать заявку в СТАК 1')
-          .setStyle(ButtonStyle.Primary) // Синяя кнопка
+          .setStyle(ButtonStyle.Primary)
       );
 
     await interaction.channel.send({ embeds: [embed], components: [row] });
@@ -103,7 +212,7 @@ client.on('interactionCreate', async interaction => {
     });
   }
 
-  // ========== КОМАНДА ДЛЯ СТАК 2 (2500 часов) ==========
+  // ========== КОМАНДА ДЛЯ СТАК 2 ==========
   if (interaction.isCommand() && interaction.commandName === 'ticket_stack2') {
     
     if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
@@ -124,14 +233,14 @@ client.on('interactionCreate', async interaction => {
         '● Минимум 6 часов стабильного онлайна в день\n\n' +
         'Нажмите кнопку ниже, чтобы заполнить анкету.'
       )
-      .setColor(0x3498DB); // Синий цвет
+      .setColor(0x3498DB);
 
     const row = new ActionRowBuilder()
       .addComponents(
         new ButtonBuilder()
           .setCustomId('create_ticket_stack2')
           .setLabel('📝 Подать заявку в СТАК 2')
-          .setStyle(ButtonStyle.Primary) // Синяя кнопка
+          .setStyle(ButtonStyle.Primary)
       );
 
     await interaction.channel.send({ embeds: [embed], components: [row] });
@@ -153,7 +262,6 @@ client.on('interactionCreate', async interaction => {
     
     if (stackType) {
       
-      // ПРОВЕРКА: Есть ли у пользователя уже активный тикет в ЭТОМ стаке?
       const userActiveTicket = activeTickets.get(`${interaction.user.id}_${stackType}`);
       
       if (userActiveTicket) {
@@ -256,12 +364,11 @@ client.on('interactionCreate', async interaction => {
 
       try {
         const stackName = stackType === 'stack1' ? 'СТАК-1' : 'СТАК-2';
-        const stackColor = 0x3498DB; // Синий цвет для обоих
+        const stackColor = 0x3498DB;
         const stackEmoji = stackType === 'stack1' ? '🔥' : '💧';
         const stackHours = stackType === 'stack1' ? '3500+' : '2500+';
         const stackAge = '15+';
 
-        // Создаём приватный канал
         const ticketChannel = await interaction.guild.channels.create({
           name: `${stackEmoji}｜${stackName}｜${user.username}`,
           type: ChannelType.GuildText,
@@ -282,7 +389,6 @@ client.on('interactionCreate', async interaction => {
           ]
         });
 
-        // Сохраняем информацию о тикете
         activeTickets.set(`${user.id}_${stackType}`, {
           channelId: ticketChannel.id,
           userId: user.id,
@@ -291,7 +397,6 @@ client.on('interactionCreate', async interaction => {
           createdAt: Date.now()
         });
 
-        // Компактный дизайн Embed
         const applicationEmbed = new EmbedBuilder()
           .setColor(stackColor)
           .setThumbnail(user.displayAvatarURL({ dynamic: true }))
@@ -307,7 +412,6 @@ client.on('interactionCreate', async interaction => {
             `📌 *Требования ${stackName}: ${stackHours} часов, ${stackAge} лет*`
           );
 
-        // Кнопки управления
         const actionRow = new ActionRowBuilder()
           .addComponents(
             new ButtonBuilder()
@@ -328,10 +432,14 @@ client.on('interactionCreate', async interaction => {
             new ButtonBuilder()
               .setCustomId(`deny_${user.id}_${stackType}`)
               .setLabel('❌ Отклонить')
-              .setStyle(ButtonStyle.Danger)
+              .setStyle(ButtonStyle.Danger),
+            
+            new ButtonBuilder()
+              .setCustomId(`close_${ticketChannel.id}`)
+              .setLabel('🔒 Закрыть')
+              .setStyle(ButtonStyle.Secondary)
           );
 
-        // Отправляем заявку
         await ticketChannel.send({
           content: `<@&${staffRoleId}>`,
           embeds: [applicationEmbed],
@@ -351,12 +459,135 @@ client.on('interactionCreate', async interaction => {
         });
       }
     }
+    
+    // ========== ОБРАБОТКА МОДАЛЬНОГО ОКНА ПРИЧИНЫ ОТКЛОНЕНИЯ ==========
+    if (customId.startsWith('deny_reason_')) {
+      
+      const parts = customId.split('_');
+      const targetUserId = parts[2];
+      const stackType = parts[3];
+      const channelId = parts[4];
+      
+      const reason = interaction.fields.getTextInputValue('reason');
+      
+      const requiredStaffRoleId = stackType === 'stack1' 
+        ? cfg.staffRoleId_stack1 
+        : cfg.staffRoleId_stack2;
+      
+      if (!interaction.member.roles.cache.has(requiredStaffRoleId)) {
+        return interaction.reply({
+          content: '❌ У вас нет прав!',
+          ephemeral: true
+        });
+      }
+      
+      await interaction.reply({ content: '⏳ Обрабатываем...', ephemeral: true });
+      
+      try {
+        const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
+        const stackName = stackType === 'stack1' ? 'СТАК 1' : 'СТАК 2';
+        const stackEmoji = stackType === 'stack1' ? '🔥' : '💧';
+        
+        // Обновляем статистику
+        if (stackType === 'stack1') {
+          stats.stack1.denied++;
+          stats.stack1.weekDenied++;
+        } else {
+          stats.stack2.denied++;
+          stats.stack2.weekDenied++;
+        }
+        saveStats();
+        
+        activeTickets.delete(`${targetUserId}_${stackType}`);
+        
+        let targetUser;
+        try {
+          targetUser = await client.users.fetch(targetUserId);
+        } catch (error) {
+          console.error(`❌ Не удалось найти пользователя ${targetUserId}:`, error);
+        }
+        
+        if (targetUser) {
+          try {
+            const dmEmbed = new EmbedBuilder()
+              .setTitle(`${stackEmoji} ЗАЯВКА ОТКЛОНЕНА | ${stackName}`)
+              .setDescription(
+                `**К сожалению, ваша заявка в клан WINTER TEAM была ОТКЛОНЕНА.**\n\n` +
+                `🔥 **Состав:** ${stackName}\n` +
+                `👤 **Стафф:** ${interaction.user.tag}\n\n` +
+                `**Причина отклонения:**\n` +
+                `> ${reason}\n\n` +
+                `**Что дальше:**\n` +
+                `✅ Вы можете подать заявку повторно позже\n` +
+                `✅ Попробуйте подать заявку в другой состав (если подходите)\n` +
+                `✅ Улучшайте свои навыки и приходите снова!\n\n` +
+                `🍀 Удачи в поиске клана!`
+              )
+              .setColor(0xFF0000);
+            
+            await targetUser.send({ embeds: [dmEmbed] });
+          } catch (error) {
+            console.error(`❌ Не удалось отправить ЛС пользователю ${targetUserId}:`, error);
+          }
+        }
+        
+        if (channel) {
+          await channel.send(`<@${targetUserId}> 😔 Ваша заявка **ОТКЛОНЕНА**.\n**Причина:** ${reason}`);
+          
+          setTimeout(async () => {
+            try {
+              await channel.delete();
+            } catch (error) {
+              console.error('Ошибка удаления канала:', error);
+            }
+          }, 5000);
+        }
+        
+        await interaction.editReply({ content: '✅ Заявка отклонена!', ephemeral: true });
+        
+      } catch (error) {
+        console.error('Ошибка отклонения:', error);
+        await interaction.editReply({ content: '❌ Ошибка!', ephemeral: true });
+      }
+    }
   }
 
-  // ========== ОБРАБОТКА КНОПОК УПРАВЛЕНИЯ (С ОТПРАВКОЙ В ЛС) ==========
+  // ========== ОБРАБОТКА КНОПОК УПРАВЛЕНИЯ ==========
   if (interaction.isButton()) {
     
     const customId = interaction.customId;
+    
+    // ========== КНОПКА ЗАКРЫТЬ ==========
+    if (customId.startsWith('close_')) {
+      const channelId = customId.split('_')[1];
+      
+      // Проверяем права (любая роль стаффа или админ)
+      const hasStaffRole = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || 
+                           interaction.member.roles.cache.has(cfg.staffRoleId_stack2);
+      
+      if (!hasStaffRole && !interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({
+          content: '❌ У вас нет прав для закрытия тикетов!',
+          ephemeral: true
+        });
+      }
+      
+      await interaction.reply({ content: '🔒 Закрываю канал...', ephemeral: true });
+      
+      setTimeout(async () => {
+        try {
+          const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
+          if (channel) {
+            await channel.delete();
+            console.log(`✅ Канал ${channel.name} закрыт вручную`);
+          }
+        } catch (error) {
+          console.error('Ошибка закрытия канала:', error);
+        }
+      }, 2000);
+      
+      return;
+    }
     
     if (customId.startsWith('accept_') || customId.startsWith('consider_') || 
         customId.startsWith('call_') || customId.startsWith('deny_')) {
@@ -383,7 +614,6 @@ client.on('interactionCreate', async interaction => {
       
       const originalEmbed = interaction.message.embeds[0];
       
-      // Получаем пользователя для отправки ЛС
       let targetUser;
       try {
         targetUser = await client.users.fetch(targetUserId);
@@ -399,10 +629,18 @@ client.on('interactionCreate', async interaction => {
         await interaction.update({ embeds: [embed], components: [] });
         await channel.send(`<@${targetUserId}> 🎉 **Поздравляем! Ваша заявка в ${stackName} ПРИНЯТА!** Свяжитесь с лидером.`);
         
-        // Удаляем тикет из активных
+        // Обновляем статистику
+        if (stackType === 'stack1') {
+          stats.stack1.accepted++;
+          stats.stack1.weekAccepted++;
+        } else {
+          stats.stack2.accepted++;
+          stats.stack2.weekAccepted++;
+        }
+        saveStats();
+        
         activeTickets.delete(`${targetUserId}_${stackType}`);
         
-        // Устанавливаем таймер на удаление канала через 12 часов
         setTimeout(async () => {
           try {
             const channelToDelete = await client.channels.fetch(channel.id).catch(() => null);
@@ -413,11 +651,10 @@ client.on('interactionCreate', async interaction => {
           } catch (error) {
             console.error('Ошибка удаления канала по таймеру:', error);
           }
-        }, 12 * 60 * 60 * 1000); // 12 часов
+        }, 12 * 60 * 60 * 1000);
         
         await channel.send(`⏰ **Этот канал будет автоматически удалён через 12 часов.**`);
         
-        // Отправка в ЛС
         if (targetUser) {
           try {
             const dmEmbed = new EmbedBuilder()
@@ -450,7 +687,6 @@ client.on('interactionCreate', async interaction => {
         await interaction.update({ embeds: [embed], components: [interaction.message.components[0]] });
         await channel.send(`<@${targetUserId}> Ваша заявка в **${stackName}** взята **НА РАССМОТРЕНИЕ**.`);
         
-        // Отправка в ЛС
         if (targetUser) {
           try {
             const dmEmbed = new EmbedBuilder()
@@ -483,7 +719,6 @@ client.on('interactionCreate', async interaction => {
         await interaction.update({ embeds: [embed], components: [interaction.message.components[0]] });
         await channel.send(`<@${targetUserId}> 📞 Вы **ВЫЗВАНЫ НА ОБЗВОН** в **${stackName}**. Будьте готовы к вопросам в войсе.`);
         
-        // Отправка в ЛС
         if (targetUser) {
           try {
             const dmEmbed = new EmbedBuilder()
@@ -510,52 +745,24 @@ client.on('interactionCreate', async interaction => {
         }
       } 
       
-      // ========== ОТКЛОНИТЬ ==========
+      // ========== ОТКЛОНИТЬ (открываем модальное окно) ==========
       else if (action === 'deny') {
-        const embed = EmbedBuilder.from(originalEmbed)
-          .setColor(0xFF0000);
+        const modal = new ModalBuilder()
+          .setCustomId(`deny_reason_${targetUserId}_${stackType}_${channel.id}`)
+          .setTitle('❌ Причина отклонения заявки');
         
-        await interaction.update({ embeds: [embed], components: [] });
-        await channel.send(`<@${targetUserId}> 😔 Ваша заявка в **${stackName}** **ОТКЛОНЕНА**. Можете подать снова позже.`);
+        const reasonInput = new TextInputBuilder()
+          .setCustomId('reason')
+          .setLabel('Укажите причину отклонения')
+          .setPlaceholder('Например: Недостаточно часов, не подходит возраст...')
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMaxLength(500);
         
-        // Удаляем тикет из активных
-        activeTickets.delete(`${targetUserId}_${stackType}`);
+        const reasonRow = new ActionRowBuilder().addComponents(reasonInput);
+        modal.addComponents(reasonRow);
         
-        // Отправка в ЛС
-        if (targetUser) {
-          try {
-            const dmEmbed = new EmbedBuilder()
-              .setTitle(`${stackEmoji} ЗАЯВКА ОТКЛОНЕНА | ${stackName}`)
-              .setDescription(
-                `**К сожалению, ваша заявка в клан WINTER TEAM была ОТКЛОНЕНА.**\n\n` +
-                `🔥 **Состав:** ${stackName}\n` +
-                `👤 **Стафф:** ${interaction.user.tag}\n\n` +
-                `**Возможные причины:**\n` +
-                `❌ Недостаточно часов\n` +
-                `❌ Не подходите по возрасту\n` +
-                `❌ Не соответствуете требованиям клана\n\n` +
-                `**Что дальше:**\n` +
-                `✅ Вы можете подать заявку повторно позже\n` +
-                `✅ Попробуйте подать заявку в другой состав (если подходите)\n` +
-                `✅ Улучшайте свои навыки и приходите снова!\n\n` +
-                `🍀 Удачи в поиске клана!`
-              )
-              .setColor(0xFF0000);
-            
-            await targetUser.send({ embeds: [dmEmbed] });
-          } catch (error) {
-            console.error(`❌ Не удалось отправить ЛС пользователю ${targetUserId}:`, error);
-          }
-        }
-        
-        // Удаляем канал через 5 секунд
-        setTimeout(async () => {
-          try {
-            await channel.delete();
-          } catch (error) {
-            console.error('Ошибка удаления канала:', error);
-          }
-        }, 5000);
+        await interaction.showModal(modal);
       }
     }
   }
