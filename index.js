@@ -42,12 +42,12 @@ client.once('ready', async () => {
   try {
     await client.application.commands.create({
       name: 'ticket_stack1',
-      description: 'Создать сообщение для подачи заявок в СТАК 1 (3000+ часов)'
+      description: 'Создать сообщение для подачи заявок в СТАК 1 (3500+ часов)'
     });
     
     await client.application.commands.create({
       name: 'ticket_stack2',
-      description: 'Создать сообщение для подачи заявок в СТАК 2 (2000+ часов)'
+      description: 'Создать сообщение для подачи заявок в СТАК 2 (2500+ часов)'
     });
     
     console.log('✅ Команды /ticket_stack1 и /ticket_stack2 зарегистрированы!');
@@ -79,7 +79,7 @@ client.on('interactionCreate', async interaction => {
       .setTitle('📋 ПОДАТЬ ЗАЯВКУ В КЛАН WT')
       .setDescription(
         '**ТРЕБОВАНИЯ ДЛЯ СТАК 1:**\n\n' +
-        '✅ 3000 часов на аккаунте и более\n' +
+        '✅ 3500 часов на аккаунте и более\n' +
         '✅ 15+ лет\n' +
         '✅ Иметь хороший микрофон\n' +
         '✅ Умение слушать коллы и адекватно реагировать на критику\n' +
@@ -119,8 +119,8 @@ client.on('interactionCreate', async interaction => {
       .setTitle('📋 ПОДАТЬ ЗАЯВКУ В КЛАН WT')
       .setDescription(
         '**ТРЕБОВАНИЯ ДЛЯ СТАК 2:**\n\n' +
-        '✅ 2000 часов на аккаунте и более\n' +
-        '✅ 14+ лет\n' +
+        '✅ 2500 часов на аккаунте и более\n' +
+        '✅ 15+ лет\n' +
         '✅ Иметь хороший микрофон\n' +
         '✅ Умение слушать коллы и адекватно реагировать на критику\n' +
         '✅ Минимум 6 часов стабильного онлайна в день\n\n' +
@@ -191,7 +191,7 @@ client.on('interactionCreate', async interaction => {
       const ageInput = new TextInputBuilder()
         .setCustomId('age')
         .setLabel('Ваш возраст?')
-        .setPlaceholder(stackType === 'stack1' ? '15+ лет' : '14+ лет')
+        .setPlaceholder(stackType === 'stack1' ? '15+ лет' : '15+ лет')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
         .setMaxLength(20);
@@ -199,7 +199,7 @@ client.on('interactionCreate', async interaction => {
       const steamInput = new TextInputBuilder()
         .setCustomId('steam')
         .setLabel('Ссылка на Steam / Сколько часов?')
-        .setPlaceholder(stackType === 'stack1' ? 'https://steamcommunity.com/... / 3000+ часов' : 'https://steamcommunity.com/... / 2000+ часов')
+        .setPlaceholder(stackType === 'stack1' ? 'https://steamcommunity.com/... / 3500+ часов' : 'https://steamcommunity.com/... / 2500+ часов')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
         .setMaxLength(200);
@@ -262,8 +262,8 @@ client.on('interactionCreate', async interaction => {
         const stackName = stackType === 'stack1' ? 'СТАК-1' : 'СТАК-2';
         const stackColor = stackType === 'stack1' ? 0xFF4500 : 0x3498DB;
         const stackEmoji = stackType === 'stack1' ? '🔥' : '💧';
-        const stackHours = stackType === 'stack1' ? '3000+' : '2000+';
-        const stackAge = stackType === 'stack1' ? '15+' : '14+';
+        const stackHours = stackType === 'stack1' ? '3500+' : '2500+';
+        const stackAge = stackType === 'stack1' ? '15+' : '15+';
 
         // Создаём приватный канал
         const ticketChannel = await interaction.guild.channels.create({
