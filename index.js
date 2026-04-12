@@ -23,6 +23,9 @@ const client = new Client({
 // Хранилище активных тикетов (в памяти)
 const activeTickets = new Collection();
 
+// Хранилище времени последней заявки (анти-спам)
+const lastApplicationTime = new Collection();
+
 // Путь к файлу статистики
 const statsPath = path.join(__dirname, 'stats.json');
 
@@ -71,15 +74,53 @@ const getConfig = () => {
     guildId: process.env.GUILD_ID || config.guildId,
     ticketCategory: process.env.TICKET_CATEGORY || config.ticketCategory,
     staffRoleId_stack1: process.env.STAFF_ROLE_STACK1 || config.staffRoleId_stack1,
-    staffRoleId_stack2: process.env.STAFF_ROLE_STACK2 || config.staffRoleId_stack2
+    staffRoleId_stack2: process.env.STAFF_ROLE_STACK2 || config.staffRoleId_stack2,
+    logChannelId: process.env.LOG_CHANNEL_ID || config.logChannelId
   };
 };
+
+// Функция для отправки логов
+async function sendLog(channelId, embed) {
+  try {
+    const cfg = getConfig();
+    if (!cfg.logChannelId) return;
+    
+    const channel = await client.channels.fetch(cfg.logChannelId).catch(() => null);
+    if (channel) {
+      await channel.send({ embeds: [embed] });
+    }
+  } catch (error) {
+    console.error('❌ Ошибка отправки лога:', error);
+  }
+}
 
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} успешно запущен!`);
   
   // Устанавливаем статус
   client.user.setActivity('заявки в клан WT', { type: 3 });
+  
+  const cfg = getConfig();
+  
+  // ВРЕМЕННО: Принудительно очищаем и регистрируем команды (удали после первого запуска!)
+  try {
+    const globalCommands = await client.application.commands.fetch();
+    for (const command of globalCommands.values()) {
+      await command.delete();
+      console.log(`🗑️ Удалена глобальная команда: ${command.name}`);
+    }
+    
+    const guild = client.guilds.cache.get(cfg.guildId);
+    if (guild) {
+      const guildCommands = await guild.commands.fetch();
+      for (const command of guildCommands.values()) {
+        await command.delete();
+        console.log(`🗑️ Удалена команда сервера: ${command.name}`);
+      }
+    }
+  } catch (error) {
+    console.error('❌ Ошибка удаления команд:', error);
+  }
   
   try {
     await client.application.commands.create({
@@ -103,6 +144,7 @@ client.once('ready', async () => {
   }
   
   activeTickets.clear();
+  lastApplicationTime.clear();
   console.log('✅ Бот готов к работе!');
 });
 
@@ -113,7 +155,6 @@ client.on('interactionCreate', async interaction => {
   // ========== КОМАНДА /stats ==========
   if (interaction.isCommand() && interaction.commandName === 'stats') {
     
-    // Проверяем, есть ли у пользователя ЛЮБАЯ роль стаффа
     const hasStaffRole = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || 
                          interaction.member.roles.cache.has(cfg.staffRoleId_stack2);
     
@@ -126,7 +167,6 @@ client.on('interactionCreate', async interaction => {
     
     const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     
-    // Проверяем и сбрасываем статистику если нужно
     if (stats.stack1.weekStart < weekAgo) {
       stats.stack1.weekAccepted = 0;
       stats.stack1.weekDenied = 0;
@@ -262,6 +302,20 @@ client.on('interactionCreate', async interaction => {
     
     if (stackType) {
       
+      // ========== АНТИ-СПАМ ПРОВЕРКА ==========
+      const lastTime = lastApplicationTime.get(`${interaction.user.id}_${stackType}`);
+      if (lastTime) {
+        const timeLeft = 24 * 60 * 60 * 1000 - (Date.now() - lastTime);
+        if (timeLeft > 0) {
+          const hours = Math.floor(timeLeft / (60 * 60 * 1000));
+          const minutes = Math.floor((timeLeft % (60 * 60 * 1000)) / (60 * 1000));
+          return interaction.reply({
+            content: `❌ Вы уже подавали заявку в этот состав! Попробуйте снова через **${hours} ч ${minutes} мин**.`,
+            ephemeral: true
+          });
+        }
+      }
+      
       const userActiveTicket = activeTickets.get(`${interaction.user.id}_${stackType}`);
       
       if (userActiveTicket) {
@@ -356,6 +410,9 @@ client.on('interactionCreate', async interaction => {
       const staffRoleId = stackType === 'stack1' 
         ? cfg.staffRoleId_stack1 
         : cfg.staffRoleId_stack2;
+      
+      // Сохраняем время заявки для анти-спама
+      lastApplicationTime.set(`${user.id}_${stackType}`, Date.now());
       
       await interaction.reply({
         content: '⏳ Обрабатываем вашу заявку...',
@@ -531,6 +588,20 @@ client.on('interactionCreate', async interaction => {
           }
         }
         
+        // ========== ЛОГ: ОТКЛОНЕНИЕ ==========
+        const logEmbed = new EmbedBuilder()
+          .setTitle('❌ Заявка отклонена')
+          .setColor(0xFF0000)
+          .addFields(
+            { name: '👤 Заявитель', value: `<@${targetUserId}> (${targetUser?.tag || targetUserId})`, inline: true },
+            { name: '👮 Стафф', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
+            { name: '📋 Состав', value: stackName, inline: true },
+            { name: '📝 Причина', value: reason, inline: false }
+          )
+          .setTimestamp();
+        
+        await sendLog(cfg.logChannelId, logEmbed);
+        
         if (channel) {
           await channel.send(`<@${targetUserId}> 😔 Ваша заявка **ОТКЛОНЕНА**.\n**Причина:** ${reason}`);
           
@@ -561,7 +632,6 @@ client.on('interactionCreate', async interaction => {
     if (customId.startsWith('close_')) {
       const channelId = customId.split('_')[1];
       
-      // Проверяем права (любая роль стаффа или админ)
       const hasStaffRole = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || 
                            interaction.member.roles.cache.has(cfg.staffRoleId_stack2);
       
@@ -574,9 +644,23 @@ client.on('interactionCreate', async interaction => {
       
       await interaction.reply({ content: '🔒 Закрываю канал...', ephemeral: true });
       
+      // ========== ЛОГ: ЗАКРЫТИЕ ==========
+      const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
+      const channelName = channel?.name || 'Неизвестный канал';
+      
+      const logEmbed = new EmbedBuilder()
+        .setTitle('🔒 Тикет закрыт')
+        .setColor(0x808080)
+        .addFields(
+          { name: '📁 Канал', value: channelName, inline: true },
+          { name: '👮 Стафф', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true }
+        )
+        .setTimestamp();
+      
+      await sendLog(cfg.logChannelId, logEmbed);
+      
       setTimeout(async () => {
         try {
-          const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
           if (channel) {
             await channel.delete();
             console.log(`✅ Канал ${channel.name} закрыт вручную`);
@@ -640,6 +724,19 @@ client.on('interactionCreate', async interaction => {
         saveStats();
         
         activeTickets.delete(`${targetUserId}_${stackType}`);
+        
+        // ========== ЛОГ: ПРИНЯТИЕ ==========
+        const logEmbed = new EmbedBuilder()
+          .setTitle('✅ Заявка принята')
+          .setColor(0x00FF00)
+          .addFields(
+            { name: '👤 Заявитель', value: `<@${targetUserId}> (${targetUser?.tag || targetUserId})`, inline: true },
+            { name: '👮 Стафф', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
+            { name: '📋 Состав', value: stackName, inline: true }
+          )
+          .setTimestamp();
+        
+        await sendLog(cfg.logChannelId, logEmbed);
         
         setTimeout(async () => {
           try {
