@@ -79,21 +79,21 @@ client.on('interactionCreate', async interaction => {
       .setTitle('📋 ПОДАТЬ ЗАЯВКУ В КЛАН WT')
       .setDescription(
         '**ТРЕБОВАНИЯ ДЛЯ СТАК 1:**\n\n' +
-        '✅ 3500 часов на аккаунте и более\n' +
-        '✅ 15+ лет\n' +
-        '✅ Иметь хороший микрофон\n' +
-        '✅ Умение слушать коллы и адекватно реагировать на критику\n' +
-        '✅ Минимум 6 часов стабильного онлайна в день\n\n' +
+        '● 3500 часов на аккаунте и более\n' +
+        '● 15+ лет\n' +
+        '● Иметь хороший микрофон\n' +
+        '● Умение слушать коллы и адекватно реагировать на критику\n' +
+        '● Минимум 6 часов стабильного онлайна в день\n\n' +
         'Нажмите кнопку ниже, чтобы заполнить анкету.'
       )
-      .setColor(0xFF4500);
+      .setColor(0x3498DB); // Синий цвет
 
     const row = new ActionRowBuilder()
       .addComponents(
         new ButtonBuilder()
           .setCustomId('create_ticket_stack1')
           .setLabel('📝 Подать заявку в СТАК 1')
-          .setStyle(ButtonStyle.Danger)
+          .setStyle(ButtonStyle.Primary) // Синяя кнопка
       );
 
     await interaction.channel.send({ embeds: [embed], components: [row] });
@@ -117,21 +117,21 @@ client.on('interactionCreate', async interaction => {
       .setTitle('📋 ПОДАТЬ ЗАЯВКУ В КЛАН WT')
       .setDescription(
         '**ТРЕБОВАНИЯ ДЛЯ СТАК 2:**\n\n' +
-        '✅ 2500 часов на аккаунте и более\n' +
-        '✅ 15+ лет\n' +
-        '✅ Иметь хороший микрофон\n' +
-        '✅ Умение слушать коллы и адекватно реагировать на критику\n' +
-        '✅ Минимум 6 часов стабильного онлайна в день\n\n' +
+        '● 2500 часов на аккаунте и более\n' +
+        '● 15+ лет\n' +
+        '● Иметь хороший микрофон\n' +
+        '● Умение слушать коллы и адекватно реагировать на критику\n' +
+        '● Минимум 6 часов стабильного онлайна в день\n\n' +
         'Нажмите кнопку ниже, чтобы заполнить анкету.'
       )
-      .setColor(0x3498DB);
+      .setColor(0x3498DB); // Синий цвет
 
     const row = new ActionRowBuilder()
       .addComponents(
         new ButtonBuilder()
           .setCustomId('create_ticket_stack2')
           .setLabel('📝 Подать заявку в СТАК 2')
-          .setStyle(ButtonStyle.Primary)
+          .setStyle(ButtonStyle.Primary) // Синяя кнопка
       );
 
     await interaction.channel.send({ embeds: [embed], components: [row] });
@@ -256,7 +256,7 @@ client.on('interactionCreate', async interaction => {
 
       try {
         const stackName = stackType === 'stack1' ? 'СТАК-1' : 'СТАК-2';
-        const stackColor = stackType === 'stack1' ? 0xFF4500 : 0x3498DB;
+        const stackColor = 0x3498DB; // Синий цвет для обоих
         const stackEmoji = stackType === 'stack1' ? '🔥' : '💧';
         const stackHours = stackType === 'stack1' ? '3500+' : '2500+';
         const stackAge = '15+';
@@ -291,7 +291,7 @@ client.on('interactionCreate', async interaction => {
           createdAt: Date.now()
         });
 
-        // Компактный дизайн Embed (БЕЗ ФУТЕРА И ВРЕМЕНИ)
+        // Компактный дизайн Embed
         const applicationEmbed = new EmbedBuilder()
           .setColor(stackColor)
           .setThumbnail(user.displayAvatarURL({ dynamic: true }))
@@ -593,11 +593,11 @@ const server = http.createServer((req, res) => {
       <title>WINTER TEAM Bot</title>
       <style>
         body { font-family: Arial; text-align: center; padding: 50px; background: #1a1a1a; color: white; }
-        h1 { color: #FF4500; }
+        h1 { color: #3498DB; }
       </style>
     </head>
     <body>
-      <h1>🔥 WINTER TEAM BOT</h1>
+      <h1>💧 WINTER TEAM BOT</h1>
       <p>Бот работает!</p>
       <p>Статус: 🟢 Online</p>
     </body>
