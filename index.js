@@ -89,7 +89,7 @@ function getWorkingHoursMessage() {
   if (mskHour >= 10 && mskHour < 21) {
     return ''; // В рабочее время не показываем ничего
   } else {
-    return `⏰ *Заявки рассматриваются с 10:00 до 21:00 по МСК. Ваша заявка будет обработана в рабочее время.*`;
+    return `\n**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n⏰ *Заявки рассматриваются с 10:00 до 21:00 по МСК. Ваша заявка будет обработана в рабочее время.*`;
   }
 }
 
@@ -110,17 +110,29 @@ async function sendLog(channelId, embed) {
 
 // Функция для извлечения часов из текста
 function extractHours(text) {
-  const matches = text.match(/(\d+[\s,]?\d*)\s*(?:часов?|hours?|ч|h)/i);
+  // Очищаем текст от лишних пробелов
+  const cleanText = text.toLowerCase().trim();
+  
+  // Ищем числа в тексте
+  const matches = cleanText.match(/(\d+[\s,]?\d*)\s*(?:часов?|hours?|ч|h)/i);
   if (matches) {
     return parseInt(matches[1].replace(/[\s,]/g, ''));
   }
   
-  const numbers = text.match(/\d+/g);
+  // Если не нашли по шаблону, ищем просто число
+  const numbers = cleanText.match(/\d+/g);
   if (numbers) {
+    // Берём самое большое число (скорее всего это часы)
     return Math.max(...numbers.map(n => parseInt(n)));
   }
   
   return 0;
+}
+
+// Функция проверки, является ли строка числом
+function isValidHours(text) {
+  const hours = extractHours(text);
+  return hours > 0;
 }
 
 client.once('ready', async () => {
@@ -425,13 +437,31 @@ client.on('interactionCreate', async interaction => {
         ? cfg.staffRoleId_stack1 
         : cfg.staffRoleId_stack2;
       
-      lastApplicationTime.set(`${user.id}_${stackType}`, Date.now());
-      
-      // ========== АВТО-ОТКЛОНЕНИЕ ПО ЧАСАМ ==========
+      // ========== ПРОВЕРКА НА ДУРАКА: ЧАСЫ ДОЛЖНЫ БЫТЬ ЧИСЛОМ ==========
       const hours = extractHours(steam);
       const minHours = stackType === 'stack1' ? 3500 : 2500;
       
-      if (hours > 0 && hours < minHours) {
+      // Если часы не найдены (0) и в тексте нет ссылки на steam
+      if (hours === 0 && !steam.toLowerCase().includes('steamcommunity.com')) {
+        await interaction.reply({
+          content: '❌ **Ошибка!** Вы не указали количество часов. Пожалуйста, укажите сколько часов у вас в Rust (например: "3500 часов").',
+          ephemeral: true
+        });
+        return;
+      }
+      
+      if (hours === 0) {
+        await interaction.reply({
+          content: '❌ **Ошибка!** Не удалось определить количество часов. Пожалуйста, напишите часы цифрами (например: "3500 часов" или "3.5k часов").',
+          ephemeral: true
+        });
+        return;
+      }
+      
+      lastApplicationTime.set(`${user.id}_${stackType}`, Date.now());
+      
+      // ========== АВТО-ОТКЛОНЕНИЕ ПО ЧАСАМ ==========
+      if (hours < minHours) {
         if (stackType === 'stack1') {
           stats.stack1.denied++;
           stats.stack1.weekDenied++;
@@ -510,7 +540,7 @@ client.on('interactionCreate', async interaction => {
           createdAt: Date.now()
         });
 
-        // Embed с сообщением о времени работы (если вне рабочего времени)
+        // Сообщение о времени работы (если вне рабочего времени)
         const workingHoursMsg = getWorkingHoursMessage();
         
         const applicationEmbed = new EmbedBuilder()
@@ -521,11 +551,10 @@ client.on('interactionCreate', async interaction => {
             `**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n\n` +
             `👤 **Имя:** ${name}\n` +
             `🎂 **Возраст:** ${age}\n` +
-            `🎮 **Steam / Часы:** ${steam} ${hours > 0 ? `(${hours} ч)` : ''}\n` +
+            `🎮 **Steam / Часы:** ${steam} (${hours} ч)\n` +
             `🎯 **Желаемая роль:** ${role}\n` +
-            `👂 **Готовность слушать:** ${listen}\n\n` +
-            `**━━━━━━━━━━━━━━━━━━━━━━━━━━**` +
-            (workingHoursMsg ? `\n${workingHoursMsg}` : '')
+            `👂 **Готовность слушать:** ${listen}` +
+            workingHoursMsg
           );
 
         const actionRow = new ActionRowBuilder()
