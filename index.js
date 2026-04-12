@@ -40,7 +40,6 @@ try {
     const loadedStats = JSON.parse(fs.readFileSync(statsPath, 'utf8'));
     stats = loadedStats;
     
-    // Проверяем, не началась ли новая неделя
     const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     if (stats.stack1.weekStart < weekAgo) {
       stats.stack1.weekAccepted = 0;
@@ -57,7 +56,6 @@ try {
   console.error('❌ Ошибка загрузки статистики:', error);
 }
 
-// Сохраняем статистику в файл
 function saveStats() {
   try {
     fs.writeFileSync(statsPath, JSON.stringify(stats, null, 2));
@@ -66,7 +64,7 @@ function saveStats() {
   }
 }
 
-// Получаем настройки из переменных окружения или config.json
+// Получаем настройки из переменных окружения
 const getConfig = () => {
   return {
     token: process.env.DISCORD_TOKEN || config.token,
@@ -79,30 +77,41 @@ const getConfig = () => {
   };
 };
 
-// Функция для отправки логов
+// Функция для отправки логов (ИСПРАВЛЕННАЯ)
 async function sendLog(channelId, embed) {
   try {
-    const cfg = getConfig();
-    if (!cfg.logChannelId) return;
-    
-    const channel = await client.channels.fetch(cfg.logChannelId).catch(() => null);
-    if (channel) {
-      await channel.send({ embeds: [embed] });
+    if (!channelId) {
+      console.log('⚠️ LOG_CHANNEL_ID не настроен, лог не отправлен');
+      return;
     }
+    
+    console.log(`📝 Отправка лога в канал ${channelId}`);
+    
+    const channel = await client.channels.fetch(channelId).catch(error => {
+      console.error(`❌ Канал ${channelId} не найден:`, error.message);
+      return null;
+    });
+    
+    if (!channel) {
+      console.error(`❌ Не удалось найти канал с ID ${channelId}`);
+      return;
+    }
+    
+    await channel.send({ embeds: [embed] });
+    console.log(`✅ Лог отправлен в канал ${channel.name}`);
   } catch (error) {
-    console.error('❌ Ошибка отправки лога:', error);
+    console.error('❌ Ошибка отправки лога:', error.message);
   }
 }
 
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} успешно запущен!`);
   
-  // Устанавливаем статус
   client.user.setActivity('заявки в клан WT', { type: 3 });
   
   const cfg = getConfig();
   
-  // ВРЕМЕННО: Принудительно очищаем и регистрируем команды (удали после первого запуска!)
+  // Очищаем старые команды и регистрируем новые
   try {
     const globalCommands = await client.application.commands.fetch();
     for (const command of globalCommands.values()) {
@@ -145,6 +154,23 @@ client.once('ready', async () => {
   
   activeTickets.clear();
   lastApplicationTime.clear();
+  
+  // ТЕСТ ЛОГОВ ПРИ ЗАПУСКЕ
+  setTimeout(async () => {
+    const currentCfg = getConfig();
+    console.log('🔍 ТЕСТ ЛОГОВ: LOG_CHANNEL_ID =', currentCfg.logChannelId || 'НЕ НАСТРОЕН');
+    
+    if (currentCfg.logChannelId) {
+      const testEmbed = new EmbedBuilder()
+        .setTitle('🧪 ТЕСТ ЛОГОВ')
+        .setDescription('Канал логов работает! Бот перезапущен.')
+        .setColor(0x00FF00)
+        .setTimestamp();
+      
+      await sendLog(currentCfg.logChannelId, testEmbed);
+    }
+  }, 3000);
+  
   console.log('✅ Бот готов к работе!');
 });
 
@@ -302,7 +328,7 @@ client.on('interactionCreate', async interaction => {
     
     if (stackType) {
       
-      // ========== АНТИ-СПАМ ПРОВЕРКА ==========
+      // АНТИ-СПАМ
       const lastTime = lastApplicationTime.get(`${interaction.user.id}_${stackType}`);
       if (lastTime) {
         const timeLeft = 24 * 60 * 60 * 1000 - (Date.now() - lastTime);
@@ -411,7 +437,6 @@ client.on('interactionCreate', async interaction => {
         ? cfg.staffRoleId_stack1 
         : cfg.staffRoleId_stack2;
       
-      // Сохраняем время заявки для анти-спама
       lastApplicationTime.set(`${user.id}_${stackType}`, Date.now());
       
       await interaction.reply({
@@ -545,7 +570,6 @@ client.on('interactionCreate', async interaction => {
         const stackName = stackType === 'stack1' ? 'СТАК 1' : 'СТАК 2';
         const stackEmoji = stackType === 'stack1' ? '🔥' : '💧';
         
-        // Обновляем статистику
         if (stackType === 'stack1') {
           stats.stack1.denied++;
           stats.stack1.weekDenied++;
@@ -588,7 +612,7 @@ client.on('interactionCreate', async interaction => {
           }
         }
         
-        // ========== ЛОГ: ОТКЛОНЕНИЕ ==========
+        // ЛОГ ОТКЛОНЕНИЯ
         const logEmbed = new EmbedBuilder()
           .setTitle('❌ Заявка отклонена')
           .setColor(0xFF0000)
@@ -628,7 +652,7 @@ client.on('interactionCreate', async interaction => {
     
     const customId = interaction.customId;
     
-    // ========== КНОПКА ЗАКРЫТЬ ==========
+    // КНОПКА ЗАКРЫТЬ
     if (customId.startsWith('close_')) {
       const channelId = customId.split('_')[1];
       
@@ -644,10 +668,10 @@ client.on('interactionCreate', async interaction => {
       
       await interaction.reply({ content: '🔒 Закрываю канал...', ephemeral: true });
       
-      // ========== ЛОГ: ЗАКРЫТИЕ ==========
       const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
       const channelName = channel?.name || 'Неизвестный канал';
       
+      // ЛОГ ЗАКРЫТИЯ
       const logEmbed = new EmbedBuilder()
         .setTitle('🔒 Тикет закрыт')
         .setColor(0x808080)
@@ -705,7 +729,7 @@ client.on('interactionCreate', async interaction => {
         console.error(`❌ Не удалось найти пользователя ${targetUserId}:`, error);
       }
       
-      // ========== ПРИНЯТЬ ==========
+      // ПРИНЯТЬ
       if (action === 'accept') {
         const embed = EmbedBuilder.from(originalEmbed)
           .setColor(0x00FF00);
@@ -713,7 +737,6 @@ client.on('interactionCreate', async interaction => {
         await interaction.update({ embeds: [embed], components: [] });
         await channel.send(`<@${targetUserId}> 🎉 **Поздравляем! Ваша заявка в ${stackName} ПРИНЯТА!** Свяжитесь с лидером.`);
         
-        // Обновляем статистику
         if (stackType === 'stack1') {
           stats.stack1.accepted++;
           stats.stack1.weekAccepted++;
@@ -725,7 +748,7 @@ client.on('interactionCreate', async interaction => {
         
         activeTickets.delete(`${targetUserId}_${stackType}`);
         
-        // ========== ЛОГ: ПРИНЯТИЕ ==========
+        // ЛОГ ПРИНЯТИЯ
         const logEmbed = new EmbedBuilder()
           .setTitle('✅ Заявка принята')
           .setColor(0x00FF00)
@@ -776,7 +799,7 @@ client.on('interactionCreate', async interaction => {
         }
       } 
       
-      // ========== НА РАССМОТРЕНИЕ ==========
+      // НА РАССМОТРЕНИЕ
       else if (action === 'consider') {
         const embed = EmbedBuilder.from(originalEmbed)
           .setColor(0xFFA500);
@@ -808,7 +831,7 @@ client.on('interactionCreate', async interaction => {
         }
       } 
       
-      // ========== НА ОБЗВОН ==========
+      // НА ОБЗВОН
       else if (action === 'call') {
         const embed = EmbedBuilder.from(originalEmbed)
           .setColor(0x808080);
@@ -842,7 +865,7 @@ client.on('interactionCreate', async interaction => {
         }
       } 
       
-      // ========== ОТКЛОНИТЬ (открываем модальное окно) ==========
+      // ОТКЛОНИТЬ (открываем модальное окно)
       else if (action === 'deny') {
         const modal = new ModalBuilder()
           .setCustomId(`deny_reason_${targetUserId}_${stackType}_${channel.id}`)
@@ -877,16 +900,16 @@ process.on('unhandledRejection', error => {
 const token = process.env.DISCORD_TOKEN || (config.token || null);
 
 if (!token) {
-  console.error('❌ ТОКЕН НЕ НАЙДЕН! Укажите DISCORD_TOKEN в переменных окружения или в config.json');
+  console.error('❌ ТОКЕН НЕ НАЙДЕН!');
   process.exit(1);
 }
 
 client.login(token).catch(error => {
-  console.error('❌ Ошибка входа. Проверьте токен:', error);
+  console.error('❌ Ошибка входа:', error);
   process.exit(1);
 });
 
-// ========== HTTP СЕРВЕР ДЛЯ RENDER ==========
+// ========== HTTP СЕРВЕР ==========
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(`
