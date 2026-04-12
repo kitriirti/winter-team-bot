@@ -74,9 +74,24 @@ const getConfig = () => {
     staffRoleId_stack1: process.env.STAFF_ROLE_STACK1 || config.staffRoleId_stack1,
     staffRoleId_stack2: process.env.STAFF_ROLE_STACK2 || config.staffRoleId_stack2,
     logChannelId: process.env.LOG_CHANNEL_ID || config.logChannelId,
-    memberRoleId: process.env.MEMBER_ROLE_ID || config.memberRoleId // Роль для принятых участников
+    memberRoleId: process.env.MEMBER_ROLE_ID || config.memberRoleId
   };
 };
+
+// Функция для получения сообщения о времени работы
+function getWorkingHoursMessage() {
+  const now = new Date();
+  
+  // МСК = UTC+3
+  const mskHour = (now.getUTCHours() + 3) % 24;
+  
+  // Рабочее время: 10:00 - 21:00 МСК
+  if (mskHour >= 10 && mskHour < 21) {
+    return ''; // В рабочее время не показываем ничего
+  } else {
+    return `⏰ *Заявки рассматриваются с 10:00 до 21:00 по МСК. Ваша заявка будет обработана в рабочее время.*`;
+  }
+}
 
 // Функция для отправки логов
 async function sendLog(channelId, embed) {
@@ -95,16 +110,13 @@ async function sendLog(channelId, embed) {
 
 // Функция для извлечения часов из текста
 function extractHours(text) {
-  // Ищем числа в тексте
   const matches = text.match(/(\d+[\s,]?\d*)\s*(?:часов?|hours?|ч|h)/i);
   if (matches) {
     return parseInt(matches[1].replace(/[\s,]/g, ''));
   }
   
-  // Если не нашли по шаблону, ищем просто число
   const numbers = text.match(/\d+/g);
   if (numbers) {
-    // Берём самое большое число (скорее всего это часы)
     return Math.max(...numbers.map(n => parseInt(n)));
   }
   
@@ -118,7 +130,6 @@ client.once('ready', async () => {
   
   const cfg = getConfig();
   
-  // Очищаем старые команды и регистрируем новые
   try {
     const globalCommands = await client.application.commands.fetch();
     for (const command of globalCommands.values()) {
@@ -421,7 +432,6 @@ client.on('interactionCreate', async interaction => {
       const minHours = stackType === 'stack1' ? 3500 : 2500;
       
       if (hours > 0 && hours < minHours) {
-        // Автоотклонение
         if (stackType === 'stack1') {
           stats.stack1.denied++;
           stats.stack1.weekDenied++;
@@ -447,7 +457,6 @@ client.on('interactionCreate', async interaction => {
         
         await interaction.reply({ embeds: [autoDenyEmbed], ephemeral: true });
         
-        // Лог автоотклонения
         const logEmbed = new EmbedBuilder()
           .setTitle('🤖 Заявка отклонена автоматически')
           .setColor(0xFF0000)
@@ -472,8 +481,6 @@ client.on('interactionCreate', async interaction => {
         const stackName = stackType === 'stack1' ? 'СТАК-1' : 'СТАК-2';
         const stackColor = 0x3498DB;
         const stackEmoji = stackType === 'stack1' ? '🔥' : '💧';
-        const stackHours = stackType === 'stack1' ? '3500+' : '2500+';
-        const stackAge = '15+';
 
         const ticketChannel = await interaction.guild.channels.create({
           name: `${stackEmoji}｜${stackName}｜${user.username}`,
@@ -503,6 +510,9 @@ client.on('interactionCreate', async interaction => {
           createdAt: Date.now()
         });
 
+        // Embed с сообщением о времени работы (если вне рабочего времени)
+        const workingHoursMsg = getWorkingHoursMessage();
+        
         const applicationEmbed = new EmbedBuilder()
           .setColor(stackColor)
           .setThumbnail(user.displayAvatarURL({ dynamic: true }))
@@ -514,8 +524,8 @@ client.on('interactionCreate', async interaction => {
             `🎮 **Steam / Часы:** ${steam} ${hours > 0 ? `(${hours} ч)` : ''}\n` +
             `🎯 **Желаемая роль:** ${role}\n` +
             `👂 **Готовность слушать:** ${listen}\n\n` +
-            `**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n` +
-            `📌 *Требования ${stackName}: ${stackHours} часов, ${stackAge} лет*`
+            `**━━━━━━━━━━━━━━━━━━━━━━━━━━**` +
+            (workingHoursMsg ? `\n${workingHoursMsg}` : '')
           );
 
         const actionRow = new ActionRowBuilder()
@@ -758,7 +768,6 @@ client.on('interactionCreate', async interaction => {
         await interaction.update({ embeds: [embed], components: [] });
         await channel.send(`<@${targetUserId}> 🎉 **Поздравляем! Ваша заявка в ${stackName} ПРИНЯТА!** Свяжитесь с лидером.`);
         
-        // ОБНОВЛЯЕМ СТАТИСТИКУ
         if (stackType === 'stack1') {
           stats.stack1.accepted++;
           stats.stack1.weekAccepted++;
@@ -768,7 +777,7 @@ client.on('interactionCreate', async interaction => {
         }
         saveStats();
         
-        // ========== ВЫДАЁМ РОЛЬ ==========
+        // ВЫДАЁМ РОЛЬ
         if (cfg.memberRoleId) {
           try {
             const member = await interaction.guild.members.fetch(targetUserId);
@@ -818,7 +827,7 @@ client.on('interactionCreate', async interaction => {
                 `🔥 **Состав:** ${stackName}\n` +
                 `👤 **Стафф:** ${interaction.user.tag}\n\n` +
                 `**Дальнейшие действия:**\n` +
-                `✅ Свяжитесь с лидером для получения роли\n` +
+                `✅ Свяжитесь с лидером\n` +
                 `✅ Ознакомьтесь с правилами клана\n` +
                 `✅ Добро пожаловать в команду!\n\n` +
                 `🎮 Удачной игры!`
