@@ -89,7 +89,7 @@ const getConfig = () => {
     staffRoleId_stack2: process.env.STAFF_ROLE_STACK2 || config.staffRoleId_stack2,
     logChannelId: process.env.LOG_CHANNEL_ID || config.logChannelId,
     memberRoleId: process.env.MEMBER_ROLE_ID || config.memberRoleId,
-    photoChannelId: process.env.PHOTO_CHANNEL_ID || config.photoChannelId // НОВАЯ ПЕРЕМЕННАЯ
+    photoChannelId: process.env.PHOTO_CHANNEL_ID || config.photoChannelId
   };
 };
 
@@ -97,7 +97,7 @@ function getWorkingHoursMessage() {
   const now = new Date();
   const mskHour = (now.getUTCHours() + 3) % 24;
   if (mskHour >= 10 && mskHour < 21) return '';
-  return `\n**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n⏰ *Заявки рассматриваются с 10:00 до 21:00 по МСК. Ваша заявка будет обработана в рабочее время.*`;
+  return `\n**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n⏰ *Заявки рассматриваются с 10:00 до 21:00 по МСК.*`;
 }
 
 async function sendLog(channelId, embed) {
@@ -176,46 +176,36 @@ client.once('ready', async () => {
   }
 });
 
-// ========== !compress В ЛС ==========
+// ========== КОМАНДА !compress В КАНАЛЕ ==========
 client.on('messageCreate', async message => {
   if (message.author.bot) return;
-  if (message.channel.type !== ChannelType.DM) return;
+  if (message.channel.type === ChannelType.DM) return;
   if (!message.content.startsWith('!compress')) return;
+  
+  const cfg = getConfig();
+  const hasStaffRole = message.member.roles.cache.has(cfg.staffRoleId_stack1) || 
+                       message.member.roles.cache.has(cfg.staffRoleId_stack2);
+  
+  if (!hasStaffRole && !message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    return message.reply('❌ У вас нет прав!').then(m => setTimeout(() => m.delete(), 3000));
+  }
   
   const description = message.content.slice('!compress'.length).trim() || '';
   
   if (message.attachments.size === 0) {
-    return message.reply('❌ Прикрепите фото!\nПример: `!compress Мой скриншот` + фото');
+    return message.reply('❌ Прикрепите фото!').then(m => setTimeout(() => m.delete(), 3000));
   }
   
   const attachment = message.attachments.first();
   if (!attachment.contentType?.startsWith('image/')) {
-    return message.reply('❌ Файл не изображение!');
+    return message.reply('❌ Файл не изображение!').then(m => setTimeout(() => m.delete(), 3000));
   }
   
   try {
-    const cfg = getConfig();
-    const guild = client.guilds.cache.get(cfg.guildId);
-    if (!guild) return message.reply('❌ Сервер не найден!');
+    // Удаляем сообщение пользователя
+    await message.delete().catch(() => {});
     
-    // Ищем канал для фото
-    let targetChannel = null;
-    if (cfg.photoChannelId) {
-      targetChannel = await guild.channels.fetch(cfg.photoChannelId).catch(() => null);
-    }
-    
-    // Если нет PHOTO_CHANNEL_ID, пробуем LOG_CHANNEL_ID
-    if (!targetChannel && cfg.logChannelId) {
-      targetChannel = await guild.channels.fetch(cfg.logChannelId).catch(() => null);
-    }
-    
-    // Если совсем ничего нет - ищем первый текстовый канал
-    if (!targetChannel) {
-      targetChannel = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.permissionsFor(guild.members.me).has(PermissionFlagsBits.SendMessages));
-    }
-    
-    if (!targetChannel) return message.reply('❌ Не найден канал для отправки!');
-    
+    // Скачиваем изображение
     const response = await fetch(attachment.url);
     const imageBuffer = Buffer.from(await response.arrayBuffer());
     
@@ -227,14 +217,20 @@ client.on('messageCreate', async message => {
     const embed = new EmbedBuilder()
       .setColor(0x2B2D31)
       .setImage(`attachment://image.${ext}`);
-    if (description) embed.setDescription(`**${description}**`);
     
-    await targetChannel.send({ embeds: [embed], files: [{ attachment: imageBuffer, name: `image.${ext}` }] });
-    await message.reply(`✅ Отправлено в **#${targetChannel.name}**!`);
+    if (description) {
+      embed.setDescription(`**${description}**`);
+    }
+    
+    // Отправляем в тот же канал
+    await message.channel.send({
+      embeds: [embed],
+      files: [{ attachment: imageBuffer, name: `image.${ext}` }]
+    });
     
   } catch (error) {
     console.error('❌ !compress error:', error);
-    await message.reply('❌ Ошибка отправки!');
+    await message.channel.send('❌ Ошибка отправки!').then(m => setTimeout(() => m.delete(), 3000));
   }
 });
 
