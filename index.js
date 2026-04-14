@@ -20,13 +20,11 @@ const client = new Client({
 
 const activeTickets = new Collection();
 
-// Статус приёма заявок (по умолчанию ВКЛЮЧЕН)
 let ticketStatus = {
   stack1: true,
   stack2: true
 };
 
-// Загружаем статус из переменной окружения
 try {
   if (process.env.TICKET_STATUS) {
     ticketStatus = JSON.parse(process.env.TICKET_STATUS);
@@ -459,7 +457,6 @@ client.on('interactionCreate', async interaction => {
     
     if (stackType) {
       
-      // ПРОВЕРКА: ОТКРЫТ ЛИ ПРИЁМ ЗАЯВОК
       if (!ticketStatus[stackType]) {
         return interaction.reply({
           content: '❌ **Набор в клан временно закрыт!** Попробуйте позже.',
@@ -499,11 +496,11 @@ client.on('interactionCreate', async interaction => {
 
       const ageInput = new TextInputBuilder()
         .setCustomId('age')
-        .setLabel('Ваш возраст?')
-        .setPlaceholder('15+ лет')
+        .setLabel('Ваш возраст? (только цифры)')
+        .setPlaceholder('15')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
-        .setMaxLength(20);
+        .setMaxLength(3);
 
       const steamInput = new TextInputBuilder()
         .setCustomId('steam')
@@ -515,16 +512,16 @@ client.on('interactionCreate', async interaction => {
 
       const hoursInput = new TextInputBuilder()
         .setCustomId('hours')
-        .setLabel('Сколько часов в Rust?')
+        .setLabel('Сколько часов в Rust? (только цифры)')
         .setPlaceholder(stackType === 'stack1' ? '3500' : '2500')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
         .setMaxLength(10);
 
-      const listenInput = new TextInputBuilder()
-        .setCustomId('listen')
-        .setLabel('Готовы слушать коллы и критику?')
-        .setPlaceholder('Да, готов / Частично / Нет')
+      const roleInput = new TextInputBuilder()
+        .setCustomId('role')
+        .setLabel('Желаемая роль в клане?')
+        .setPlaceholder('Строитель, ПвПшник, Фермер, Электрик')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
         .setMaxLength(100);
@@ -534,7 +531,7 @@ client.on('interactionCreate', async interaction => {
         new ActionRowBuilder().addComponents(ageInput),
         new ActionRowBuilder().addComponents(steamInput),
         new ActionRowBuilder().addComponents(hoursInput),
-        new ActionRowBuilder().addComponents(listenInput)
+        new ActionRowBuilder().addComponents(roleInput)
       );
 
       await interaction.showModal(modal);
@@ -551,10 +548,10 @@ client.on('interactionCreate', async interaction => {
       const stackType = customId.replace('application_modal_', '');
       
       const name = interaction.fields.getTextInputValue('name');
-      const age = interaction.fields.getTextInputValue('age');
+      const ageText = interaction.fields.getTextInputValue('age');
       const steam = interaction.fields.getTextInputValue('steam');
       const hoursText = interaction.fields.getTextInputValue('hours');
-      const listen = interaction.fields.getTextInputValue('listen');
+      const role = interaction.fields.getTextInputValue('role');
       
       const user = interaction.user;
       
@@ -562,6 +559,25 @@ client.on('interactionCreate', async interaction => {
         ? cfg.staffRoleId_stack1 
         : cfg.staffRoleId_stack2;
       
+      // ========== ПРОВЕРКА ВОЗРАСТА (ТОЛЬКО ЦИФРЫ) ==========
+      const ageNumber = parseInt(ageText.replace(/\s+/g, ''));
+      
+      if (isNaN(ageNumber) || ageNumber <= 0) {
+        return interaction.reply({
+          content: '❌ **Ошибка!** Поле "Возраст" должно содержать только цифры (например: 15).',
+          ephemeral: true
+        });
+      }
+      
+      // ========== ПРОВЕРКА STEAM ССЫЛКИ ==========
+      if (!steam.toLowerCase().includes('steamcommunity.com')) {
+        return interaction.reply({
+          content: '❌ **Ошибка!** Пожалуйста, укажите корректную ссылку на Steam профиль (должна содержать steamcommunity.com).',
+          ephemeral: true
+        });
+      }
+      
+      // ========== ПРОВЕРКА ЧАСОВ (ТОЛЬКО ЦИФРЫ) ==========
       const hoursNumber = parseInt(hoursText.replace(/\s+/g, ''));
       
       if (isNaN(hoursNumber) || hoursNumber <= 0) {
@@ -573,6 +589,7 @@ client.on('interactionCreate', async interaction => {
       
       const minHours = stackType === 'stack1' ? 3500 : 2500;
       
+      // ========== АВТО-ОТКЛОНЕНИЕ ПО ЧАСАМ ==========
       if (hoursNumber < minHours) {
         if (stackType === 'stack1') {
           stats.stack1.denied++;
@@ -639,10 +656,10 @@ client.on('interactionCreate', async interaction => {
             `### <@${user.id}> подал заявку в **${stackName}**\n` +
             `**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n\n` +
             `👤 **Имя:** ${name}\n` +
-            `🎂 **Возраст:** ${age}\n` +
+            `🎂 **Возраст:** ${ageNumber} лет\n` +
             `🔗 **Steam:** ${steam}\n` +
             `⏰ **Часы:** ${hoursNumber} ч\n` +
-            `👂 **Готовность слушать:** ${listen}` +
+            `🎯 **Желаемая роль:** ${role}` +
             workingHoursMsg
           );
 
