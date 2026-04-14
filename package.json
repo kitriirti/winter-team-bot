@@ -4,16 +4,13 @@
   "description": "Discord бот для заявок в клан WINTER TEAM",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node index.js"
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "sharp": "^0.33.0"
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "dependencies": {
-    "discord.js": "^14.14.1"
-  },
-  "keywords": ["discord", "bot", "rust", "clan"],
-  "author": "",
-  "license": "ISC"
+  }
 }
