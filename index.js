@@ -15,7 +15,7 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.DirectMessages // Для ЛС
+    GatewayIntentBits.DirectMessages // Важно для ЛС
   ],
   partials: [
     'CHANNEL', // Для DM
@@ -244,10 +244,17 @@ client.on('messageCreate', async message => {
   // Проверяем команду
   if (!message.content.startsWith('!compress')) return;
   
-  // Парсим: !compress #канал Описание
-  const args = message.content.slice('!compress'.length).trim().split(/ (.+)/);
-  const channelMention = args[0]?.trim();
-  const description = args[1] || '';
+  console.log(`📨 [ЛС] ${message.author.tag}: ${message.content}`);
+  
+  // Парсим: !compress ID_канала Описание
+  const parts = message.content.slice('!compress'.length).trim().split(/\s+/);
+  const channelId = parts[0];
+  const description = parts.slice(1).join(' ') || '';
+  
+  // Проверяем ID канала
+  if (!channelId || !/^\d+$/.test(channelId)) {
+    return message.reply('❌ **Ошибка!** Укажите ID канала (число).\nПример: `!compress 1492867415309029439 Мой скриншот`');
+  }
   
   // Проверяем, есть ли вложения
   if (message.attachments.size === 0) {
@@ -261,33 +268,29 @@ client.on('messageCreate', async message => {
     return message.reply('❌ **Ошибка!** Прикреплённый файл не является изображением.');
   }
   
-  // Извлекаем ID канала из упоминания (<#123456789>)
-  const channelIdMatch = channelMention.match(/<#(\d+)>/);
-  if (!channelIdMatch) {
-    return message.reply('❌ **Ошибка!** Укажите канал в формате #канал.\nПример: `!compress #общий Мой скриншот`');
-  }
-  
-  const channelId = channelIdMatch[1];
-  
   try {
-    // Находим канал
-    const guild = client.guilds.cache.get(getConfig().guildId);
+    // Находим сервер
+    const cfg = getConfig();
+    const guild = client.guilds.cache.get(cfg.guildId);
     if (!guild) {
       return message.reply('❌ **Ошибка!** Не удалось найти сервер.');
     }
     
-    const channel = await guild.channels.fetch(channelId);
+    // Находим канал
+    const channel = await guild.channels.fetch(channelId).catch(() => null);
     if (!channel || !channel.isTextBased()) {
       return message.reply('❌ **Ошибка!** Канал не найден или не является текстовым.');
     }
     
-    // Проверяем права на отправку в канал
+    // Проверяем права
     if (!channel.permissionsFor(guild.members.me).has(PermissionFlagsBits.SendMessages)) {
       return message.reply('❌ **Ошибка!** У бота нет прав на отправку сообщений в этот канал.');
     }
     
     // Скачиваем изображение
     const response = await fetch(attachment.url);
+    if (!response.ok) throw new Error('Failed to fetch image');
+    
     const imageBuffer = Buffer.from(await response.arrayBuffer());
     
     // Определяем расширение
@@ -295,9 +298,9 @@ client.on('messageCreate', async message => {
     if (attachment.contentType.includes('png')) extension = 'png';
     else if (attachment.contentType.includes('webp')) extension = 'webp';
     else if (attachment.contentType.includes('gif')) extension = 'gif';
-    else if (attachment.name?.includes('.png')) extension = 'png';
-    else if (attachment.name?.includes('.webp')) extension = 'webp';
-    else if (attachment.name?.includes('.gif')) extension = 'gif';
+    else if (attachment.name?.toLowerCase().includes('.png')) extension = 'png';
+    else if (attachment.name?.toLowerCase().includes('.webp')) extension = 'webp';
+    else if (attachment.name?.toLowerCase().includes('.gif')) extension = 'gif';
     
     // Создаём Embed
     const embed = new EmbedBuilder()
@@ -315,11 +318,13 @@ client.on('messageCreate', async message => {
     });
     
     // Отвечаем в ЛС
-    await message.reply(`✅ **Готово!** Изображение отправлено в канал ${channelMention}`);
+    await message.reply(`✅ **Готово!** Изображение отправлено в канал **#${channel.name}**`);
+    
+    console.log(`✅ [ЛС] Изображение от ${message.author.tag} отправлено в #${channel.name}`);
     
   } catch (error) {
-    console.error('Ошибка в !compress:', error);
-    await message.reply('❌ **Ошибка!** Не удалось отправить изображение.');
+    console.error('❌ Ошибка в !compress:', error);
+    await message.reply('❌ **Ошибка!** Не удалось отправить изображение. Проверьте ID канала.');
   }
 });
 
