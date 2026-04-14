@@ -19,6 +19,7 @@ const client = new Client({
 });
 
 const activeTickets = new Collection();
+const autoDeleteTimeouts = new Collection();
 
 let ticketStatus = {
   stack1: true,
@@ -114,6 +115,31 @@ async function sendLog(channelId, embed) {
   }
 }
 
+// Авто-удаление тикета через 7 дней
+function scheduleAutoDelete(channelId, ticketId) {
+  const timeout = setTimeout(async () => {
+    try {
+      const channel = await client.channels.fetch(channelId).catch(() => null);
+      if (channel) {
+        await channel.send('🗑️ **Тикет автоматически закрыт (прошло 7 дней).**');
+        setTimeout(async () => {
+          try {
+            await channel.delete();
+          } catch (error) {
+            console.error('Ошибка удаления канала:', error);
+          }
+        }, 5000);
+      }
+      activeTickets.delete(ticketId);
+      autoDeleteTimeouts.delete(ticketId);
+    } catch (error) {
+      console.error('Ошибка авто-удаления:', error);
+    }
+  }, 7 * 24 * 60 * 60 * 1000);
+  
+  autoDeleteTimeouts.set(ticketId, timeout);
+}
+
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} успешно запущен!`);
   client.user.setActivity('заявки в клан WT', { type: 3 });
@@ -147,13 +173,8 @@ client.once('ready', async () => {
     });
     
     await client.application.commands.create({
-      name: 'ticket-off',
-      description: 'Закрыть приём заявок (только для администраторов)'
-    });
-    
-    await client.application.commands.create({
-      name: 'ticket-on',
-      description: 'Открыть приём заявок (только для администраторов)'
+      name: 'ticket_panel',
+      description: 'Создать панель управления набором (только для админов)'
     });
     
     console.log('✅ Команды зарегистрированы!');
@@ -169,8 +190,8 @@ client.on('interactionCreate', async interaction => {
   
   const cfg = getConfig();
   
-  // ========== КОМАНДА /ticket-off ==========
-  if (interaction.isCommand() && interaction.commandName === 'ticket-off') {
+  // ========== КОМАНДА /ticket_panel ==========
+  if (interaction.isCommand() && interaction.commandName === 'ticket_panel') {
     
     if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
       return interaction.reply({ 
@@ -179,40 +200,89 @@ client.on('interactionCreate', async interaction => {
       });
     }
     
-    ticketStatus.stack1 = false;
-    ticketStatus.stack2 = false;
-    saveTicketStatus();
-    
     const embed = new EmbedBuilder()
-      .setTitle('🔴 ПРИЁМ ЗАЯВОК ЗАКРЫТ')
-      .setDescription('Набор в клан временно приостановлен.')
-      .setColor(0xFF0000)
+      .setTitle('🔧 УПРАВЛЕНИЕ НАБОРОМ')
+      .setDescription(
+        `**Текущий статус:**\n` +
+        `🔥 СТАК 1: ${ticketStatus.stack1 ? '🟢 Открыт' : '🔴 Закрыт'}\n` +
+        `💧 СТАК 2: ${ticketStatus.stack2 ? '🟢 Открыт' : '🔴 Закрыт'}\n\n` +
+        `Нажмите на кнопку, чтобы изменить статус:`
+      )
+      .setColor(0x3498DB)
       .setTimestamp();
     
-    await interaction.reply({ embeds: [embed] });
+    const row = new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId('toggle_stack1')
+          .setLabel('🔥 СТАК 1')
+          .setEmoji(ticketStatus.stack1 ? '🟢' : '🔴')
+          .setStyle(ticketStatus.stack1 ? ButtonStyle.Success : ButtonStyle.Danger),
+        
+        new ButtonBuilder()
+          .setCustomId('toggle_stack2')
+          .setLabel('💧 СТАК 2')
+          .setEmoji(ticketStatus.stack2 ? '🟢' : '🔴')
+          .setStyle(ticketStatus.stack2 ? ButtonStyle.Success : ButtonStyle.Danger)
+      );
+    
+    await interaction.reply({ embeds: [embed], components: [row] });
   }
   
-  // ========== КОМАНДА /ticket-on ==========
-  if (interaction.isCommand() && interaction.commandName === 'ticket-on') {
+  // ========== КНОПКИ УПРАВЛЕНИЯ НАБОРОМ ==========
+  if (interaction.isButton() && (interaction.customId === 'toggle_stack1' || interaction.customId === 'toggle_stack2')) {
     
-    if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
+    const hasStaffRole = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || 
+                         interaction.member.roles.cache.has(cfg.staffRoleId_stack2) ||
+                         interaction.memberPermissions.has(PermissionFlagsBits.Administrator);
+    
+    if (!hasStaffRole) {
       return interaction.reply({ 
-        content: '❌ У вас нет прав для использования этой команды!', 
+        content: '❌ У вас нет прав для управления набором!', 
         ephemeral: true 
       });
     }
     
-    ticketStatus.stack1 = true;
-    ticketStatus.stack2 = true;
+    const stackType = interaction.customId === 'toggle_stack1' ? 'stack1' : 'stack2';
+    const stackName = stackType === 'stack1' ? 'СТАК 1' : 'СТАК 2';
+    
+    ticketStatus[stackType] = !ticketStatus[stackType];
     saveTicketStatus();
     
-    const embed = new EmbedBuilder()
-      .setTitle('🟢 ПРИЁМ ЗАЯВОК ОТКРЫТ')
-      .setDescription('Набор в клан возобновлён!')
-      .setColor(0x00FF00)
+    const newEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+      .setDescription(
+        `**Текущий статус:**\n` +
+        `🔥 СТАК 1: ${ticketStatus.stack1 ? '🟢 Открыт' : '🔴 Закрыт'}\n` +
+        `💧 СТАК 2: ${ticketStatus.stack2 ? '🟢 Открыт' : '🔴 Закрыт'}\n\n` +
+        `Нажмите на кнопку, чтобы изменить статус:`
+      )
       .setTimestamp();
     
-    await interaction.reply({ embeds: [embed] });
+    const newRow = new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId('toggle_stack1')
+          .setLabel('🔥 СТАК 1')
+          .setEmoji(ticketStatus.stack1 ? '🟢' : '🔴')
+          .setStyle(ticketStatus.stack1 ? ButtonStyle.Success : ButtonStyle.Danger),
+        
+        new ButtonBuilder()
+          .setCustomId('toggle_stack2')
+          .setLabel('💧 СТАК 2')
+          .setEmoji(ticketStatus.stack2 ? '🟢' : '🔴')
+          .setStyle(ticketStatus.stack2 ? ButtonStyle.Success : ButtonStyle.Danger)
+      );
+    
+    await interaction.update({ embeds: [newEmbed], components: [newRow] });
+    
+    const logEmbed = new EmbedBuilder()
+      .setTitle(ticketStatus[stackType] ? '🟢 НАБОР ОТКРЫТ' : '🔴 НАБОР ЗАКРЫТ')
+      .setDescription(`**${stackName}** — набор ${ticketStatus[stackType] ? 'открыт' : 'закрыт'}`)
+      .setColor(ticketStatus[stackType] ? 0x00FF00 : 0xFF0000)
+      .addFields({ name: '👮 Стафф', value: `<@${interaction.user.id}>`, inline: true })
+      .setTimestamp();
+    
+    await sendLog(cfg.logChannelId, logEmbed);
   }
   
   // ========== КОМАНДА /ping ==========
@@ -356,7 +426,7 @@ client.on('interactionCreate', async interaction => {
         },
         {
           name: '📈 Всего за всё время',
-          value: `🔥 СТАК 1: принято **${stats.stack1.accepted}**, отклонено **${stats.stack1.denied}**, автоотклонено **${stats.stack1.autoDenied || 0}**\n💧 СТАК 2: принято **${stats.stack2.accepted}**, отклонено **${stats.stack2.denied}**, автоотклонено **${stats.stack2.autoDenied || 0}**\n\n🤖 Всего автоотклонено: **${totalAutoDenied}**`,
+          value: `🔥 СТАК 1: принято **${stats.stack1.accepted}**, отклонено **${stats.stack1.denied}**\n💧 СТАК 2: принято **${stats.stack2.accepted}**, отклонено **${stats.stack2.denied}**\n\n🤖 Автоотклонено по часам: **${totalAutoDenied}**`,
           inline: false
         },
         {
@@ -559,7 +629,7 @@ client.on('interactionCreate', async interaction => {
         ? cfg.staffRoleId_stack1 
         : cfg.staffRoleId_stack2;
       
-      // ========== ПРОВЕРКА ВОЗРАСТА (ТОЛЬКО ЦИФРЫ) ==========
+      // Проверка возраста
       const ageNumber = parseInt(ageText.replace(/\s+/g, ''));
       
       if (isNaN(ageNumber) || ageNumber <= 0) {
@@ -569,15 +639,15 @@ client.on('interactionCreate', async interaction => {
         });
       }
       
-      // ========== ПРОВЕРКА STEAM ССЫЛКИ ==========
+      // Проверка Steam ссылки
       if (!steam.toLowerCase().includes('steamcommunity.com')) {
         return interaction.reply({
-          content: '❌ **Ошибка!** Пожалуйста, укажите корректную ссылку на Steam профиль (должна содержать steamcommunity.com).',
+          content: '❌ **Ошибка!** Пожалуйста, укажите корректную ссылку на Steam профиль.',
           ephemeral: true
         });
       }
       
-      // ========== ПРОВЕРКА ЧАСОВ (ТОЛЬКО ЦИФРЫ) ==========
+      // Проверка часов
       const hoursNumber = parseInt(hoursText.replace(/\s+/g, ''));
       
       if (isNaN(hoursNumber) || hoursNumber <= 0) {
@@ -589,7 +659,6 @@ client.on('interactionCreate', async interaction => {
       
       const minHours = stackType === 'stack1' ? 3500 : 2500;
       
-      // ========== АВТО-ОТКЛОНЕНИЕ ПО ЧАСАМ ==========
       if (hoursNumber < minHours) {
         if (stackType === 'stack1') {
           stats.stack1.denied++;
@@ -639,13 +708,18 @@ client.on('interactionCreate', async interaction => {
           ]
         });
 
-        activeTickets.set(`${user.id}_${stackType}`, {
+        const ticketId = `${user.id}_${stackType}`;
+        
+        activeTickets.set(ticketId, {
           channelId: ticketChannel.id,
           userId: user.id,
           stackType: stackType,
           status: 'pending',
           createdAt: Date.now()
         });
+
+        // Авто-удаление через 7 дней
+        scheduleAutoDelete(ticketChannel.id, ticketId);
 
         const workingHoursMsg = getWorkingHoursMessage();
         
@@ -717,6 +791,11 @@ client.on('interactionCreate', async interaction => {
       
       for (const [ticketId, ticket] of activeTickets) {
         if (ticket.channelId === channelId) {
+          const timeout = autoDeleteTimeouts.get(ticketId);
+          if (timeout) {
+            clearTimeout(timeout);
+            autoDeleteTimeouts.delete(ticketId);
+          }
           activeTickets.delete(ticketId);
           break;
         }
@@ -765,6 +844,15 @@ client.on('interactionCreate', async interaction => {
         console.error(`❌ Не удалось найти пользователя ${targetUserId}:`, error);
       }
       
+      const ticketId = `${targetUserId}_${stackType}`;
+      
+      // Отменяем авто-удаление при любом действии
+      const autoDeleteTimeout = autoDeleteTimeouts.get(ticketId);
+      if (autoDeleteTimeout) {
+        clearTimeout(autoDeleteTimeout);
+        autoDeleteTimeouts.delete(ticketId);
+      }
+      
       if (action === 'accept') {
         const embed = EmbedBuilder.from(originalEmbed).setColor(0x00FF00);
         
@@ -790,7 +878,7 @@ client.on('interactionCreate', async interaction => {
           }
         }
         
-        activeTickets.delete(`${targetUserId}_${stackType}`);
+        activeTickets.delete(ticketId);
         
         setTimeout(async () => {
           try {
@@ -913,7 +1001,7 @@ client.on('interactionCreate', async interaction => {
         }
         saveStats();
         
-        activeTickets.delete(`${targetUserId}_${stackType}`);
+        activeTickets.delete(ticketId);
         
         if (targetUser) {
           try {
