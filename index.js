@@ -175,7 +175,7 @@ client.once('ready', async () => {
   }
 });
 
-// ========== КОМАНДА !compress В КАНАЛЕ (ЧИСТОЕ ФОТО БЕЗ ОБВОДКИ) ==========
+// ========== КОМАНДА !compress В КАНАЛЕ (СКАЧИВАНИЕ И ОТПРАВКА) ==========
 client.on('messageCreate', async message => {
   if (message.author.bot) return;
   if (message.channel.type === ChannelType.DM) return;
@@ -195,34 +195,44 @@ client.on('messageCreate', async message => {
     return message.reply('❌ Прикрепите фото!').then(m => setTimeout(() => m.delete(), 3000));
   }
   
+  const attachment = message.attachments.first();
+  
   try {
-    // Собираем все вложения
-    const files = [];
-    for (const attachment of message.attachments.values()) {
-      files.push({
-        attachment: attachment.url,
-        name: attachment.name
-      });
-    }
+    // Показываем, что бот обрабатывает
+    const loadingMsg = await message.channel.send('⏳ Обрабатываю фото...');
     
-    // Удаляем сообщение пользователя
+    // Скачиваем файл
+    const response = await fetch(attachment.url);
+    if (!response.ok) throw new Error('Failed to fetch');
+    
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    
+    // Удаляем сообщение пользователя и сообщение о загрузке
     await message.delete().catch(() => {});
+    await loadingMsg.delete().catch(() => {});
     
-    // Отправляем просто файлы с подписью (без Embed)
+    // Отправляем фото с комментарием
     if (description) {
       await message.channel.send({
         content: `**${description}**`,
-        files: files
+        files: [{
+          attachment: buffer,
+          name: attachment.name
+        }]
       });
     } else {
       await message.channel.send({
-        files: files
+        files: [{
+          attachment: buffer,
+          name: attachment.name
+        }]
       });
     }
     
   } catch (error) {
     console.error('❌ !compress error:', error);
-    await message.channel.send('❌ Ошибка отправки!').then(m => setTimeout(() => m.delete(), 3000));
+    await message.channel.send('❌ Ошибка при обработке фото!').then(m => setTimeout(() => m.delete(), 3000));
   }
 });
 
