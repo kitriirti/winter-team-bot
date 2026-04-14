@@ -186,7 +186,6 @@ client.on('interactionCreate', async interaction => {
       const embed = ticketMessage.embeds[0];
       const description = embed.description || '';
       
-      // Ищем Steam ссылку (теперь в отдельном поле 🔗 **Steam:**)
       const steamMatch = description.match(/🔗\s*\*\*Steam:\*\*\s*([^\n]+)/);
       if (!steamMatch) {
         return interaction.editReply({ content: '❌ Не удалось найти Steam в заявке!' });
@@ -194,7 +193,6 @@ client.on('interactionCreate', async interaction => {
       
       const steamText = steamMatch[1].trim();
       
-      // Извлекаем Steam ID
       let steamID = null;
       
       const idMatch = steamText.match(/(7656\d{13})/);
@@ -415,7 +413,7 @@ client.on('interactionCreate', async interaction => {
       const steamInput = new TextInputBuilder()
         .setCustomId('steam')
         .setLabel('Ссылка на Steam профиль')
-        .setPlaceholder('https://steamcommunity.com/profiles/... или /id/...')
+        .setPlaceholder('https://steamcommunity.com/profiles/...')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
         .setMaxLength(200);
@@ -428,17 +426,9 @@ client.on('interactionCreate', async interaction => {
         .setRequired(true)
         .setMaxLength(10);
 
-      const roleInput = new TextInputBuilder()
-        .setCustomId('role')
-        .setLabel('Желаемая роль в клане?')
-        .setPlaceholder('Строитель, ПвПшник, Фермер, Электрик')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMaxLength(100);
-
       const listenInput = new TextInputBuilder()
         .setCustomId('listen')
-        .setLabel('Готовы слушать коллы и принимать критику?')
+        .setLabel('Готовы слушать коллы и критику?')
         .setPlaceholder('Да, готов / Частично / Нет')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
@@ -449,7 +439,6 @@ client.on('interactionCreate', async interaction => {
         new ActionRowBuilder().addComponents(ageInput),
         new ActionRowBuilder().addComponents(steamInput),
         new ActionRowBuilder().addComponents(hoursInput),
-        new ActionRowBuilder().addComponents(roleInput),
         new ActionRowBuilder().addComponents(listenInput)
       );
 
@@ -470,7 +459,6 @@ client.on('interactionCreate', async interaction => {
       const age = interaction.fields.getTextInputValue('age');
       const steam = interaction.fields.getTextInputValue('steam');
       const hoursText = interaction.fields.getTextInputValue('hours');
-      const role = interaction.fields.getTextInputValue('role');
       const listen = interaction.fields.getTextInputValue('listen');
       
       const user = interaction.user;
@@ -479,7 +467,6 @@ client.on('interactionCreate', async interaction => {
         ? cfg.staffRoleId_stack1 
         : cfg.staffRoleId_stack2;
       
-      // Проверка часов
       const hoursNumber = parseInt(hoursText.replace(/\s+/g, ''));
       
       if (isNaN(hoursNumber) || hoursNumber <= 0) {
@@ -491,7 +478,6 @@ client.on('interactionCreate', async interaction => {
       
       const minHours = stackType === 'stack1' ? 3500 : 2500;
       
-      // Авто-отклонение по часам
       if (hoursNumber < minHours) {
         if (stackType === 'stack1') {
           stats.stack1.denied++;
@@ -561,7 +547,6 @@ client.on('interactionCreate', async interaction => {
             `🎂 **Возраст:** ${age}\n` +
             `🔗 **Steam:** ${steam}\n` +
             `⏰ **Часы:** ${hoursNumber} ч\n` +
-            `🎯 **Желаемая роль:** ${role}\n` +
             `👂 **Готовность слушать:** ${listen}` +
             workingHoursMsg
           );
@@ -757,7 +742,6 @@ client.on('interactionCreate', async interaction => {
         
         await interaction.update({ embeds: [embed], components: [interaction.message.components[0]] });
         
-        // ССЫЛКА НА ВОЙС
         const staffMember = interaction.member;
         const voiceChannel = staffMember.voice.channel;
         
