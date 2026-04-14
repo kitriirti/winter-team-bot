@@ -88,8 +88,7 @@ const getConfig = () => {
     staffRoleId_stack1: process.env.STAFF_ROLE_STACK1 || config.staffRoleId_stack1,
     staffRoleId_stack2: process.env.STAFF_ROLE_STACK2 || config.staffRoleId_stack2,
     logChannelId: process.env.LOG_CHANNEL_ID || config.logChannelId,
-    memberRoleId: process.env.MEMBER_ROLE_ID || config.memberRoleId,
-    photoChannelId: process.env.PHOTO_CHANNEL_ID || config.photoChannelId
+    memberRoleId: process.env.MEMBER_ROLE_ID || config.memberRoleId
   };
 };
 
@@ -176,7 +175,7 @@ client.once('ready', async () => {
   }
 });
 
-// ========== КОМАНДА !compress В КАНАЛЕ ==========
+// ========== КОМАНДА !compress В КАНАЛЕ (ПЕРЕСЫЛКА БЕЗ СКАЧИВАНИЯ) ==========
 client.on('messageCreate', async message => {
   if (message.author.bot) return;
   if (message.channel.type === ChannelType.DM) return;
@@ -205,28 +204,17 @@ client.on('messageCreate', async message => {
     // Удаляем сообщение пользователя
     await message.delete().catch(() => {});
     
-    // Скачиваем изображение
-    const response = await fetch(attachment.url);
-    const imageBuffer = Buffer.from(await response.arrayBuffer());
-    
-    let ext = 'jpg';
-    if (attachment.contentType.includes('png')) ext = 'png';
-    else if (attachment.contentType.includes('webp')) ext = 'webp';
-    else if (attachment.contentType.includes('gif')) ext = 'gif';
-    
+    // Создаём Embed с изображением (используем прямую ссылку Discord)
     const embed = new EmbedBuilder()
       .setColor(0x2B2D31)
-      .setImage(`attachment://image.${ext}`);
+      .setImage(attachment.url);
     
     if (description) {
       embed.setDescription(`**${description}**`);
     }
     
-    // Отправляем в тот же канал
-    await message.channel.send({
-      embeds: [embed],
-      files: [{ attachment: imageBuffer, name: `image.${ext}` }]
-    });
+    // Отправляем Embed
+    await message.channel.send({ embeds: [embed] });
     
   } catch (error) {
     console.error('❌ !compress error:', error);
