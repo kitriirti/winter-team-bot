@@ -19,6 +19,7 @@ const client = new Client({
 });
 
 const activeTickets = new Collection();
+const reminderTimeouts = new Collection();
 
 let stats = {
   stack1: { accepted: 0, denied: 0, autoDenied: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() },
@@ -91,17 +92,42 @@ async function sendLog(channelId, embed) {
   }
 }
 
-function extractHours(text) {
-  const cleanText = text.toLowerCase().trim();
-  const matches = cleanText.match(/(\d+[\s,]?\d*)\s*(?:часов?|hours?|ч|h)/i);
-  if (matches) {
-    return parseInt(matches[1].replace(/[\s,]/g, ''));
+async function extractSteamID(text) {
+  const steamIDMatch = text.match(/(7656\d{13})/);
+  if (steamIDMatch) return steamIDMatch[1];
+  
+  const profilesMatch = text.match(/steamcommunity\.com\/profiles\/(\d+)/);
+  if (profilesMatch) return profilesMatch[1];
+  
+  const customMatch = text.match(/steamcommunity\.com\/id\/([^\/\s]+)/);
+  if (customMatch) return customMatch[1];
+  
+  return null;
+}
+
+function getBattleMetricsUrl(steamID) {
+  if (/^\d+$/.test(steamID)) {
+    return `https://www.battlemetrics.com/players/${steamID}`;
   }
-  const numbers = cleanText.match(/\d+/g);
-  if (numbers) {
-    return Math.max(...numbers.map(n => parseInt(n)));
-  }
-  return 0;
+  return `https://www.battlemetrics.com/players/steam?url=https%3A%2F%2Fsteamcommunity.com%2Fid%2F${steamID}`;
+}
+
+function scheduleReminder(channelId, staffRoleId, ticketId) {
+  const timeout = setTimeout(async () => {
+    try {
+      const channel = await client.channels.fetch(channelId).catch(() => null);
+      if (channel) {
+        await channel.send({
+          content: `<@&${staffRoleId}> ⏰ **Напоминание!** Эта заявка ожидает рассмотрения более 24 часов.`,
+        });
+      }
+      reminderTimeouts.delete(ticketId);
+    } catch (error) {
+      console.error('Ошибка отправки напоминания:', error);
+    }
+  }, 24 * 60 * 60 * 1000);
+  
+  reminderTimeouts.set(ticketId, timeout);
 }
 
 client.once('ready', async () => {
@@ -109,6 +135,23 @@ client.once('ready', async () => {
   client.user.setActivity('заявки в клан WT', { type: 3 });
   
   const cfg = getConfig();
+  
+  try {
+    const globalCommands = await client.application.commands.fetch();
+    for (const command of globalCommands.values()) {
+      await command.delete();
+    }
+    
+    const guild = client.guilds.cache.get(cfg.guildId);
+    if (guild) {
+      const guildCommands = await guild.commands.fetch();
+      for (const command of guildCommands.values()) {
+        await command.delete();
+      }
+    }
+  } catch (error) {
+    console.error('❌ Ошибка удаления команд:', error);
+  }
   
   try {
     await client.application.commands.create({
@@ -124,6 +167,11 @@ client.once('ready', async () => {
     await client.application.commands.create({
       name: 'stats',
       description: 'Показать статистику заявок за неделю (только для стаффа)'
+    });
+    
+    await client.application.commands.create({
+      name: 'battlemetrics',
+      description: 'Показать BattleMetrics профиль игрока из заявки (только для стаффа)'
     });
     
     await client.application.commands.create({
@@ -152,6 +200,81 @@ client.on('interactionCreate', async interaction => {
     await interaction.editReply({
       content: `🏓 **Понг!**\n📡 Задержка бота: **${latency}ms**\n🌐 Задержка Discord API: **${apiLatency}ms**`
     });
+  }
+  
+  // ========== КОМАНДА /battlemetrics ==========
+  if (interaction.isCommand() && interaction.commandName === 'battlemetrics') {
+    
+    const hasStaffRole = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || 
+                         interaction.member.roles.cache.has(cfg.staffRoleId_stack2);
+    
+    if (!hasStaffRole && !interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ 
+        content: '❌ У вас нет прав для использования этой команды!', 
+        ephemeral: true 
+      });
+    }
+    
+    const channel = interaction.channel;
+    const isTicketChannel = channel.name.startsWith('🔥｜') || channel.name.startsWith('💧｜');
+    
+    if (!isTicketChannel) {
+      return interaction.reply({ 
+        content: '❌ Эта команда работает только в каналах тикетов!', 
+        ephemeral: true 
+      });
+    }
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const messages = await channel.messages.fetch({ limit: 10 });
+      const ticketMessage = messages.find(msg => 
+        msg.author.id === client.user.id && 
+        msg.embeds.length > 0 &&
+        msg.embeds[0].description?.includes('подал заявку')
+      );
+      
+      if (!ticketMessage) {
+        return interaction.editReply({ content: '❌ Не удалось найти заявку в этом канале!' });
+      }
+      
+      const embed = ticketMessage.embeds[0];
+      const description = embed.description || '';
+      
+      const steamMatch = description.match(/🔗\s\*\*Steam:\*\*\s(.+?)(?:\n|$)/);
+      if (!steamMatch) {
+        return interaction.editReply({ content: '❌ Не удалось найти Steam ссылку в заявке!' });
+      }
+      
+      const steamText = steamMatch[1];
+      const steamID = await extractSteamID(steamText);
+      
+      if (!steamID) {
+        return interaction.editReply({ content: '❌ Не удалось извлечь Steam ID из ссылки!' });
+      }
+      
+      const bmUrl = getBattleMetricsUrl(steamID);
+      
+      const bmEmbed = new EmbedBuilder()
+        .setTitle('🎮 BattleMetrics профиль')
+        .setColor(0x3498DB)
+        .setDescription(
+          `**Steam ID:** ${steamID}\n` +
+          `**BattleMetrics:** [Открыть профиль](${bmUrl})\n\n` +
+          `На сайте можно посмотреть:\n` +
+          `● Часы в Rust\n` +
+          `● Историю серверов\n` +
+          `● Наличие банов\n` +
+          `● Статистику игрока`
+        );
+      
+      await interaction.editReply({ embeds: [bmEmbed] });
+      
+    } catch (error) {
+      console.error('Ошибка в /battlemetrics:', error);
+      await interaction.editReply({ content: '❌ Произошла ошибка при получении данных!' });
+    }
   }
   
   // ========== КОМАНДА /stats ==========
@@ -278,7 +401,7 @@ client.on('interactionCreate', async interaction => {
     });
   }
 
-  // ========== ОБРАБОТКА КНОПОК ==========
+  // ========== ОБРАБОТКА КНОПОК (открытие анкеты) ==========
   if (interaction.isButton()) {
     
     let stackType = '';
@@ -290,6 +413,7 @@ client.on('interactionCreate', async interaction => {
     
     if (stackType) {
       
+      // АНТИ-СПАМ УБРАН - проверка только на активный тикет
       const userActiveTicket = activeTickets.get(`${interaction.user.id}_${stackType}`);
       
       if (userActiveTicket) {
@@ -330,11 +454,19 @@ client.on('interactionCreate', async interaction => {
 
       const steamInput = new TextInputBuilder()
         .setCustomId('steam')
-        .setLabel('Ссылка на Steam / Сколько часов?')
-        .setPlaceholder(stackType === 'stack1' ? 'https://steamcommunity.com/... / 3500+ часов' : 'https://steamcommunity.com/... / 2500+ часов')
+        .setLabel('Ссылка на Steam профиль')
+        .setPlaceholder('https://steamcommunity.com/profiles/... или /id/...')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
         .setMaxLength(200);
+
+      const hoursInput = new TextInputBuilder()
+        .setCustomId('hours')
+        .setLabel('Сколько часов в Rust?')
+        .setPlaceholder(stackType === 'stack1' ? '3500' : '2500')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(10);
 
       const roleInput = new TextInputBuilder()
         .setCustomId('role')
@@ -356,6 +488,7 @@ client.on('interactionCreate', async interaction => {
         new ActionRowBuilder().addComponents(nameInput),
         new ActionRowBuilder().addComponents(ageInput),
         new ActionRowBuilder().addComponents(steamInput),
+        new ActionRowBuilder().addComponents(hoursInput),
         new ActionRowBuilder().addComponents(roleInput),
         new ActionRowBuilder().addComponents(listenInput)
       );
@@ -376,6 +509,7 @@ client.on('interactionCreate', async interaction => {
       const name = interaction.fields.getTextInputValue('name');
       const age = interaction.fields.getTextInputValue('age');
       const steam = interaction.fields.getTextInputValue('steam');
+      const hoursText = interaction.fields.getTextInputValue('hours');
       const role = interaction.fields.getTextInputValue('role');
       const listen = interaction.fields.getTextInputValue('listen');
       
@@ -385,18 +519,20 @@ client.on('interactionCreate', async interaction => {
         ? cfg.staffRoleId_stack1 
         : cfg.staffRoleId_stack2;
       
-      const hours = extractHours(steam);
-      const minHours = stackType === 'stack1' ? 3500 : 2500;
+      // Проверка часов
+      const hoursNumber = parseInt(hoursText.replace(/\s+/g, ''));
       
-      if (hours === 0) {
-        await interaction.reply({
-          content: '❌ **Ошибка!** Не удалось определить количество часов. Пожалуйста, напишите часы цифрами.',
+      if (isNaN(hoursNumber) || hoursNumber <= 0) {
+        return interaction.reply({
+          content: '❌ **Ошибка!** Поле "Часы" должно содержать только цифры (например: 3500).',
           ephemeral: true
         });
-        return;
       }
       
-      if (hours < minHours) {
+      const minHours = stackType === 'stack1' ? 3500 : 2500;
+      
+      // Авто-отклонение по часам
+      if (hoursNumber < minHours) {
         if (stackType === 'stack1') {
           stats.stack1.denied++;
           stats.stack1.weekDenied++;
@@ -411,9 +547,9 @@ client.on('interactionCreate', async interaction => {
         const autoDenyEmbed = new EmbedBuilder()
           .setTitle('❌ ЗАЯВКА ОТКЛОНЕНА АВТОМАТИЧЕСКИ')
           .setDescription(
-            `**К сожалению, ваша заявка в клан WINTER TEAM была отклонена автоматически.**\n\n` +
+            `**К сожалению, ваша заявка в клан WINTER TEAM была отклонена.**\n\n` +
             `**Причина:** Недостаточно часов в Rust\n` +
-            `**Ваши часы:** ${hours}\n` +
+            `**Ваши часы:** ${hoursNumber}\n` +
             `**Минимум:** ${minHours}+ часов\n\n` +
             `Вы можете подать заявку снова, когда наберёте нужное количество часов.`
           )
@@ -445,13 +581,18 @@ client.on('interactionCreate', async interaction => {
           ]
         });
 
-        activeTickets.set(`${user.id}_${stackType}`, {
+        const ticketId = `${user.id}_${stackType}`;
+        
+        activeTickets.set(ticketId, {
           channelId: ticketChannel.id,
           userId: user.id,
           stackType: stackType,
           status: 'pending',
           createdAt: Date.now()
         });
+
+        // Планируем напоминание через 24 часа
+        scheduleReminder(ticketChannel.id, staffRoleId, ticketId);
 
         const workingHoursMsg = getWorkingHoursMessage();
         
@@ -463,7 +604,8 @@ client.on('interactionCreate', async interaction => {
             `**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n\n` +
             `👤 **Имя:** ${name}\n` +
             `🎂 **Возраст:** ${age}\n` +
-            `🎮 **Steam / Часы:** ${steam} (${hours} ч)\n` +
+            `🔗 **Steam:** ${steam}\n` +
+            `⏰ **Часы:** ${hoursNumber} ч\n` +
             `🎯 **Желаемая роль:** ${role}\n` +
             `👂 **Готовность слушать:** ${listen}` +
             workingHoursMsg
@@ -504,6 +646,7 @@ client.on('interactionCreate', async interaction => {
     
     const customId = interaction.customId;
     
+    // КНОПКА ЗАКРЫТЬ
     if (customId.startsWith('close_')) {
       const channelId = customId.split('_')[1];
       
@@ -520,6 +663,19 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ content: '🔒 Закрываю канал...', ephemeral: true });
       
       const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
+      
+      // Отменяем таймер напоминания
+      for (const [ticketId, ticket] of activeTickets) {
+        if (ticket.channelId === channelId) {
+          const reminderTimeout = reminderTimeouts.get(ticketId);
+          if (reminderTimeout) {
+            clearTimeout(reminderTimeout);
+            reminderTimeouts.delete(ticketId);
+          }
+          activeTickets.delete(ticketId);
+          break;
+        }
+      }
       
       setTimeout(async () => {
         try {
@@ -564,6 +720,9 @@ client.on('interactionCreate', async interaction => {
         console.error(`❌ Не удалось найти пользователя ${targetUserId}:`, error);
       }
       
+      const ticketId = `${targetUserId}_${stackType}`;
+      
+      // ПРИНЯТЬ
       if (action === 'accept') {
         const embed = EmbedBuilder.from(originalEmbed).setColor(0x00FF00);
         
@@ -589,7 +748,13 @@ client.on('interactionCreate', async interaction => {
           }
         }
         
-        activeTickets.delete(`${targetUserId}_${stackType}`);
+        const reminderTimeout = reminderTimeouts.get(ticketId);
+        if (reminderTimeout) {
+          clearTimeout(reminderTimeout);
+          reminderTimeouts.delete(ticketId);
+        }
+        
+        activeTickets.delete(ticketId);
         
         setTimeout(async () => {
           try {
@@ -623,6 +788,7 @@ client.on('interactionCreate', async interaction => {
         }
       } 
       
+      // НА РАССМОТРЕНИЕ
       else if (action === 'consider') {
         const embed = EmbedBuilder.from(originalEmbed).setColor(0xFFA500);
         
@@ -648,11 +814,33 @@ client.on('interactionCreate', async interaction => {
         }
       } 
       
+      // НА ОБЗВОН (с ссылкой на войс)
       else if (action === 'call') {
         const embed = EmbedBuilder.from(originalEmbed).setColor(0x808080);
         
         await interaction.update({ embeds: [embed], components: [interaction.message.components[0]] });
-        await channel.send(`<@${targetUserId}> 📞 Вы **ВЫЗВАНЫ НА ОБЗВОН** в **${stackName}**.`);
+        
+        const staffMember = interaction.member;
+        const voiceChannel = staffMember.voice.channel;
+        
+        let voiceInvite = '';
+        if (voiceChannel) {
+          try {
+            const invite = await voiceChannel.createInvite({
+              maxAge: 86400,
+              maxUses: 1,
+              reason: `Обзвон для заявки ${targetUserId}`
+            });
+            voiceInvite = `\n\n🔊 **Голосовой канал:** ${invite.url}`;
+          } catch (error) {
+            console.error('Ошибка создания приглашения:', error);
+            voiceInvite = '\n\n⚠️ Не удалось создать приглашение в канал.';
+          }
+        } else {
+          voiceInvite = '\n\n⚠️ Стафф не находится в голосовом канале.';
+        }
+        
+        await channel.send(`<@${targetUserId}> 📞 Вы **ВЫЗВАНЫ НА ОБЗВОН** в **${stackName}**.${voiceInvite}`);
         
         if (targetUser) {
           try {
@@ -664,7 +852,8 @@ client.on('interactionCreate', async interaction => {
                 `👤 **Стафф:** ${interaction.user.tag}\n\n` +
                 `**Подготовьтесь:**\n` +
                 `✅ Рабочий микрофон\n` +
-                `✅ Ответы на вопросы`
+                `✅ Ответы на вопросы\n` +
+                `✅ Часы в Rust${voiceInvite ? `\n\n${voiceInvite}` : ''}`
               )
               .setColor(0x808080);
             
@@ -675,6 +864,7 @@ client.on('interactionCreate', async interaction => {
         }
       } 
       
+      // ОТКЛОНИТЬ
       else if (action === 'deny') {
         const embed = EmbedBuilder.from(originalEmbed).setColor(0xFF0000);
         
@@ -690,7 +880,13 @@ client.on('interactionCreate', async interaction => {
         }
         saveStats();
         
-        activeTickets.delete(`${targetUserId}_${stackType}`);
+        const reminderTimeout = reminderTimeouts.get(ticketId);
+        if (reminderTimeout) {
+          clearTimeout(reminderTimeout);
+          reminderTimeouts.delete(ticketId);
+        }
+        
+        activeTickets.delete(ticketId);
         
         if (targetUser) {
           try {
