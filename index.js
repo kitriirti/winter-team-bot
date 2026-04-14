@@ -93,87 +93,9 @@ async function sendLog(channelId, embed) {
   }
 }
 
-// ========== ИСПРАВЛЕННАЯ ФУНКЦИЯ ПРОВЕРКИ ПРИВАТНОСТИ ==========
+// ========== ПРОВЕРКА STEAM ОТКЛЮЧЕНА (ВСЕГДА FALSE) ==========
 async function isSteamProfilePrivate(steamUrl) {
-  try {
-    // Если нет API ключа, пропускаем проверку
-    const steamApiKey = process.env.STEAM_API_KEY;
-    if (!steamApiKey) {
-      console.log('⚠️ STEAM_API_KEY не настроен, проверка приватности пропущена');
-      return false;
-    }
-    
-    let steamId = null;
-    
-    // Пробуем извлечь SteamID из ссылки /profiles/ID
-    const profilesMatch = steamUrl.match(/steamcommunity\.com\/profiles\/(\d+)/);
-    if (profilesMatch) {
-      steamId = profilesMatch[1];
-    }
-    
-    // Пробуем извлечь кастомный ID из /id/name
-    const customMatch = steamUrl.match(/steamcommunity\.com\/id\/([^\/\s]+)/);
-    if (customMatch && !steamId) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000); // Таймаут 3 секунды
-        
-        const response = await fetch(
-          `https://api.steampowered.com/ISteamUser/ResolveVanityURL/v1/?key=${steamApiKey}&vanityurl=${customMatch[1]}`,
-          { signal: controller.signal }
-        );
-        
-        clearTimeout(timeoutId);
-        
-        const data = await response.json();
-        if (data.response && data.response.success === 1) {
-          steamId = data.response.steamid;
-        }
-      } catch (error) {
-        console.error('❌ Ошибка при конвертации кастомного Steam ID:', error.message);
-        // Если ошибка - пропускаем проверку приватности
-        return false;
-      }
-    }
-    
-    // Если не нашли SteamID - пропускаем проверку
-    if (!steamId) {
-      console.log('⚠️ SteamID не найден, проверка приватности пропущена');
-      return false;
-    }
-    
-    // Проверяем приватность профиля
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000); // Таймаут 3 секунды
-      
-      const response = await fetch(
-        `https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key=${steamApiKey}&steamids=${steamId}`,
-        { signal: controller.signal }
-      );
-      
-      clearTimeout(timeoutId);
-      
-      const data = await response.json();
-      
-      if (data.response && data.response.players && data.response.players.length > 0) {
-        const player = data.response.players[0];
-        // communityvisibilitystate: 3 = публичный, 1 = приватный, 2 = только друзья
-        const isPrivate = player.communityvisibilitystate !== 3;
-        console.log(`🔍 Профиль ${steamId}: ${isPrivate ? 'ПРИВАТНЫЙ' : 'ПУБЛИЧНЫЙ'}`);
-        return isPrivate;
-      }
-    } catch (error) {
-      console.error('❌ Ошибка при проверке приватности Steam:', error.message);
-      // При любой ошибке пропускаем проверку
-      return false;
-    }
-    
-    return false;
-  } catch (error) {
-    console.error('❌ Критическая ошибка в isSteamProfilePrivate:', error);
-    return false;
-  }
+  return false;
 }
 
 async function extractSteamID(text) {
@@ -676,15 +598,8 @@ client.on('interactionCreate', async interaction => {
         });
       }
       
-      // Проверка приватности (с таймаутом и обработкой ошибок)
-      const isPrivate = await isSteamProfilePrivate(steam);
-      
-      if (isPrivate) {
-        return interaction.reply({
-          content: '❌ **Ошибка!** Ваш Steam профиль скрыт. Пожалуйста, откройте его в настройках приватности Steam.',
-          ephemeral: true
-        });
-      }
+      // Проверка приватности ОТКЛЮЧЕНА
+      // const isPrivate = await isSteamProfilePrivate(steam);
       
       const minHours = stackType === 'stack1' ? 3500 : 2500;
       
