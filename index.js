@@ -1,7 +1,7 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionFlagsBits, Collection } = require('discord.js');
 const http = require('http');
 
-// Загружаем конфиг (для локальной разработки)
+// Загружаем конфиг
 let config = {};
 try {
   config = require('./config.json');
@@ -14,34 +14,29 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildVoiceStates
   ]
 });
 
-// Хранилище активных тикетов (в памяти)
 const activeTickets = new Collection();
+const reminderTimeouts = new Collection();
 
-// Хранилище времени последней заявки (анти-спам)
-const lastApplicationTime = new Collection();
-
-// Статистика (загружается из переменной окружения)
 let stats = {
   stack1: { accepted: 0, denied: 0, autoDenied: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() },
   stack2: { accepted: 0, denied: 0, autoDenied: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() }
 };
 
-// Загружаем статистику из переменной окружения
 try {
   if (process.env.STATS_DATA) {
     const loadedStats = JSON.parse(process.env.STATS_DATA);
     stats = loadedStats;
-    console.log('✅ Статистика загружена из переменной окружения');
+    console.log('✅ Статистика загружена');
   }
 } catch (error) {
-  console.error('❌ Ошибка загрузки статистики из переменной:', error);
+  console.error('❌ Ошибка загрузки статистики:', error);
 }
 
-// Проверяем, не началась ли новая неделя
 const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
 if (stats.stack1.weekStart < weekAgo) {
   stats.stack1.weekAccepted = 0;
@@ -54,7 +49,6 @@ if (stats.stack2.weekStart < weekAgo) {
   stats.stack2.weekStart = Date.now();
 }
 
-// Функция сохранения статистики
 function saveStats() {
   try {
     const statsJson = JSON.stringify(stats);
@@ -64,7 +58,6 @@ function saveStats() {
   }
 }
 
-// Получаем настройки из переменных окружения
 const getConfig = () => {
   return {
     token: process.env.DISCORD_TOKEN || config.token,
@@ -78,66 +71,159 @@ const getConfig = () => {
   };
 };
 
-// Функция для получения сообщения о времени работы
 function getWorkingHoursMessage() {
   const now = new Date();
-  
-  // МСК = UTC+3
   const mskHour = (now.getUTCHours() + 3) % 24;
   
-  // Рабочее время: 10:00 - 21:00 МСК
   if (mskHour >= 10 && mskHour < 21) {
-    return ''; // В рабочее время не показываем ничего
+    return '';
   } else {
     return `\n**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n⏰ *Заявки рассматриваются с 10:00 до 21:00 по МСК. Ваша заявка будет обработана в рабочее время.*`;
   }
 }
 
-// Функция для отправки логов
 async function sendLog(channelId, embed) {
   try {
     if (!channelId) return;
-    
     const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel) return;
-    
     await channel.send({ embeds: [embed] });
-    console.log(`✅ Лог отправлен в канал ${channel.name}`);
   } catch (error) {
     console.error('❌ Ошибка отправки лога:', error.message);
   }
 }
 
-// Функция для извлечения часов из текста
-function extractHours(text) {
-  // Очищаем текст от лишних пробелов
-  const cleanText = text.toLowerCase().trim();
-  
-  // Ищем числа в тексте
-  const matches = cleanText.match(/(\d+[\s,]?\d*)\s*(?:часов?|hours?|ч|h)/i);
-  if (matches) {
-    return parseInt(matches[1].replace(/[\s,]/g, ''));
+async function isSteamProfilePrivate(steamUrl) {
+  try {
+    let steamId = null;
+    
+    const profilesMatch = steamUrl.match(/steamcommunity\.com\/profiles\/(\d+)/);
+    if (profilesMatch) steamId = profilesMatch[1];
+    
+    const customMatch = steamUrl.match(/steamcommunity\.com\/id\/([^\/\s]+)/);
+    if (customMatch) {
+      const steamApiKey = process.env.STEAM_API_KEY;
+      if (steamApiKey) {
+        const response = await fetch(
+          `https://api.steampowered.com/ISteamUser/ResolveVanityURL/v1/?key=${steamApiKey}&vanityurl=${customMatch[1]}`
+        );
+        const data = await response.json();
+        if (data.response && data.response.success === 1) {
+          steamId = data.response.steamid;
+        }
+      }
+    }
+    
+    if (!steamId) return false;
+    
+    const steamApiKey = process.env.STEAM_API_KEY;
+    if (!steamApiKey) return false;
+    
+    const response = await fetch(
+      `https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key=${steamApiKey}&steamids=${steamId}`
+    );
+    const data = await response.json();
+    
+    if (data.response && data.response.players && data.response.players.length > 0) {
+      const player = data.response.players[0];
+      return player.communityvisibilitystate !== 3;
+    }
+    
+    return false;
+  } catch (error) {
+    console.error('Ошибка проверки приватности:', error);
+    return false;
   }
-  
-  // Если не нашли по шаблону, ищем просто число
-  const numbers = cleanText.match(/\d+/g);
-  if (numbers) {
-    // Берём самое большое число (скорее всего это часы)
-    return Math.max(...numbers.map(n => parseInt(n)));
-  }
-  
-  return 0;
 }
 
-// Функция проверки, является ли строка числом
-function isValidHours(text) {
-  const hours = extractHours(text);
-  return hours > 0;
+async function extractSteamID(text) {
+  const steamIDMatch = text.match(/(7656\d{13})/);
+  if (steamIDMatch) return steamIDMatch[1];
+  
+  const profilesMatch = text.match(/steamcommunity\.com\/profiles\/(\d+)/);
+  if (profilesMatch) return profilesMatch[1];
+  
+  const customMatch = text.match(/steamcommunity\.com\/id\/([^\/\s]+)/);
+  if (customMatch) {
+    return await resolveVanityURL(customMatch[1]);
+  }
+  
+  return null;
+}
+
+async function resolveVanityURL(vanity) {
+  try {
+    const steamApiKey = process.env.STEAM_API_KEY;
+    if (!steamApiKey) return vanity;
+    
+    const response = await fetch(
+      `https://api.steampowered.com/ISteamUser/ResolveVanityURL/v1/?key=${steamApiKey}&vanityurl=${vanity}`
+    );
+    const data = await response.json();
+    
+    if (data.response && data.response.success === 1) {
+      return data.response.steamid;
+    }
+    return vanity;
+  } catch (error) {
+    return vanity;
+  }
+}
+
+function getBattleMetricsUrl(steamID) {
+  if (/^\d+$/.test(steamID)) {
+    return `https://www.battlemetrics.com/players/${steamID}`;
+  }
+  return `https://www.battlemetrics.com/players/steam?url=https%3A%2F%2Fsteamcommunity.com%2Fid%2F${steamID}`;
+}
+
+function scheduleReminder(channelId, staffRoleId, ticketId) {
+  const timeout = setTimeout(async () => {
+    try {
+      const channel = await client.channels.fetch(channelId).catch(() => null);
+      if (channel) {
+        await channel.send({
+          content: `<@&${staffRoleId}> ⏰ **Напоминание!** Эта заявка ожидает рассмотрения более 24 часов.`,
+        });
+      }
+      reminderTimeouts.delete(ticketId);
+    } catch (error) {
+      console.error('Ошибка отправки напоминания:', error);
+    }
+  }, 24 * 60 * 60 * 1000);
+  
+  reminderTimeouts.set(ticketId, timeout);
+}
+
+function scheduleAutoDelete(channelId, ticketId) {
+  const timeout = setTimeout(async () => {
+    try {
+      const channel = await client.channels.fetch(channelId).catch(() => null);
+      if (channel) {
+        await channel.send('🗑️ **Этот тикет автоматически закрыт, так как прошло более 7 дней.**');
+        setTimeout(async () => {
+          try {
+            await channel.delete();
+          } catch (error) {
+            console.error('Ошибка авто-удаления канала:', error);
+          }
+        }, 5000);
+      }
+      activeTickets.delete(ticketId);
+    } catch (error) {
+      console.error('Ошибка авто-удаления:', error);
+    }
+  }, 7 * 24 * 60 * 60 * 1000);
+  
+  const ticket = activeTickets.get(ticketId);
+  if (ticket) {
+    ticket.autoDeleteTimeout = timeout;
+    activeTickets.set(ticketId, ticket);
+  }
 }
 
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} успешно запущен!`);
-  
   client.user.setActivity('заявки в клан WT', { type: 3 });
   
   const cfg = getConfig();
@@ -175,21 +261,113 @@ client.once('ready', async () => {
       description: 'Показать статистику заявок за неделю (только для стаффа)'
     });
     
+    await client.application.commands.create({
+      name: 'battlemetrics',
+      description: 'Показать BattleMetrics профиль игрока из заявки (только для стаффа)'
+    });
+    
+    await client.application.commands.create({
+      name: 'ping',
+      description: 'Проверить задержку бота'
+    });
+    
     console.log('✅ Команды зарегистрированы!');
   } catch (error) {
     console.error('❌ Ошибка регистрации команд:', error);
   }
   
-  activeTickets.clear();
-  lastApplicationTime.clear();
-  
   console.log('✅ Бот готов к работе!');
-  console.log(`📊 ТЕКУЩАЯ СТАТИСТИКА: СТАК1 принято=${stats.stack1.accepted} отклонено=${stats.stack1.denied} автоотклонено=${stats.stack1.autoDenied || 0} | СТАК2 принято=${stats.stack2.accepted} отклонено=${stats.stack2.denied} автоотклонено=${stats.stack2.autoDenied || 0}`);
 });
 
 client.on('interactionCreate', async interaction => {
   
   const cfg = getConfig();
+  
+  // ========== КОМАНДА /ping ==========
+  if (interaction.isCommand() && interaction.commandName === 'ping') {
+    const sent = await interaction.reply({ content: '🏓 Пинг...', fetchReply: true, ephemeral: true });
+    const latency = sent.createdTimestamp - interaction.createdTimestamp;
+    const apiLatency = Math.round(client.ws.ping);
+    
+    await interaction.editReply({
+      content: `🏓 **Понг!**\n📡 Задержка бота: **${latency}ms**\n🌐 Задержка Discord API: **${apiLatency}ms**`
+    });
+  }
+  
+  // ========== КОМАНДА /battlemetrics ==========
+  if (interaction.isCommand() && interaction.commandName === 'battlemetrics') {
+    
+    const hasStaffRole = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || 
+                         interaction.member.roles.cache.has(cfg.staffRoleId_stack2);
+    
+    if (!hasStaffRole && !interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ 
+        content: '❌ У вас нет прав для использования этой команды!', 
+        ephemeral: true 
+      });
+    }
+    
+    const channel = interaction.channel;
+    const isTicketChannel = channel.name.startsWith('🔥｜') || channel.name.startsWith('💧｜');
+    
+    if (!isTicketChannel) {
+      return interaction.reply({ 
+        content: '❌ Эта команда работает только в каналах тикетов!', 
+        ephemeral: true 
+      });
+    }
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const messages = await channel.messages.fetch({ limit: 10 });
+      const ticketMessage = messages.find(msg => 
+        msg.author.id === client.user.id && 
+        msg.embeds.length > 0 &&
+        msg.embeds[0].description?.includes('подал заявку')
+      );
+      
+      if (!ticketMessage) {
+        return interaction.editReply({ content: '❌ Не удалось найти заявку в этом канале!' });
+      }
+      
+      const embed = ticketMessage.embeds[0];
+      const description = embed.description || '';
+      
+      const steamMatch = description.match(/🔗\s\*\*Steam:\*\*\s(.+?)(?:\n|$)/);
+      if (!steamMatch) {
+        return interaction.editReply({ content: '❌ Не удалось найти Steam ссылку в заявке!' });
+      }
+      
+      const steamText = steamMatch[1];
+      const steamID = await extractSteamID(steamText);
+      
+      if (!steamID) {
+        return interaction.editReply({ content: '❌ Не удалось извлечь Steam ID из ссылки!' });
+      }
+      
+      const bmUrl = getBattleMetricsUrl(steamID);
+      
+      const bmEmbed = new EmbedBuilder()
+        .setTitle('🎮 BattleMetrics профиль')
+        .setColor(0x3498DB)
+        .setDescription(
+          `**Steam ID:** ${steamID}\n` +
+          `**BattleMetrics:** [Открыть профиль](${bmUrl})\n\n` +
+          `На сайте можно посмотреть:\n` +
+          `● Часы в Rust\n` +
+          `● Историю серверов\n` +
+          `● Наличие банов\n` +
+          `● Статистику игрока`
+        );
+      
+      await interaction.editReply({ embeds: [bmEmbed] });
+      
+    } catch (error) {
+      console.error('Ошибка в /battlemetrics:', error);
+      await interaction.editReply({ content: '❌ Произошла ошибка при получении данных!' });
+    }
+  }
   
   // ========== КОМАНДА /stats ==========
   if (interaction.isCommand() && interaction.commandName === 'stats') {
@@ -240,7 +418,7 @@ client.on('interactionCreate', async interaction => {
     await interaction.reply({ embeds: [statsEmbed], ephemeral: true });
   }
   
-  // ========== КОМАНДА ДЛЯ СТАК 1 ==========
+  // ========== КОМАНДЫ СОЗДАНИЯ СООБЩЕНИЙ ==========
   if (interaction.isCommand() && interaction.commandName === 'ticket_stack1') {
     
     if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
@@ -278,7 +456,6 @@ client.on('interactionCreate', async interaction => {
     });
   }
 
-  // ========== КОМАНДА ДЛЯ СТАК 2 ==========
   if (interaction.isCommand() && interaction.commandName === 'ticket_stack2') {
     
     if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
@@ -316,7 +493,7 @@ client.on('interactionCreate', async interaction => {
     });
   }
 
-  // ========== ОБРАБОТКА КНОПОК ==========
+  // ========== ОБРАБОТКА КНОПОК (открытие анкеты) ==========
   if (interaction.isButton()) {
     
     let stackType = '';
@@ -327,20 +504,6 @@ client.on('interactionCreate', async interaction => {
     }
     
     if (stackType) {
-      
-      // АНТИ-СПАМ
-      const lastTime = lastApplicationTime.get(`${interaction.user.id}_${stackType}`);
-      if (lastTime) {
-        const timeLeft = 24 * 60 * 60 * 1000 - (Date.now() - lastTime);
-        if (timeLeft > 0) {
-          const hours = Math.floor(timeLeft / (60 * 60 * 1000));
-          const minutes = Math.floor((timeLeft % (60 * 60 * 1000)) / (60 * 1000));
-          return interaction.reply({
-            content: `❌ Вы уже подавали заявку в этот состав! Попробуйте снова через **${hours} ч ${minutes} мин**.`,
-            ephemeral: true
-          });
-        }
-      }
       
       const userActiveTicket = activeTickets.get(`${interaction.user.id}_${stackType}`);
       
@@ -382,11 +545,19 @@ client.on('interactionCreate', async interaction => {
 
       const steamInput = new TextInputBuilder()
         .setCustomId('steam')
-        .setLabel('Ссылка на Steam / Сколько часов?')
-        .setPlaceholder(stackType === 'stack1' ? 'https://steamcommunity.com/... / 3500+ часов' : 'https://steamcommunity.com/... / 2500+ часов')
+        .setLabel('Ссылка на Steam профиль')
+        .setPlaceholder('https://steamcommunity.com/profiles/... или /id/...')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
         .setMaxLength(200);
+
+      const hoursInput = new TextInputBuilder()
+        .setCustomId('hours')
+        .setLabel('Сколько часов в Rust?')
+        .setPlaceholder(stackType === 'stack1' ? '3500' : '2500')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(10);
 
       const roleInput = new TextInputBuilder()
         .setCustomId('role')
@@ -404,19 +575,20 @@ client.on('interactionCreate', async interaction => {
         .setRequired(true)
         .setMaxLength(100);
 
-      const nameRow = new ActionRowBuilder().addComponents(nameInput);
-      const ageRow = new ActionRowBuilder().addComponents(ageInput);
-      const steamRow = new ActionRowBuilder().addComponents(steamInput);
-      const roleRow = new ActionRowBuilder().addComponents(roleInput);
-      const listenRow = new ActionRowBuilder().addComponents(listenInput);
-
-      modal.addComponents(nameRow, ageRow, steamRow, roleRow, listenRow);
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(nameInput),
+        new ActionRowBuilder().addComponents(ageInput),
+        new ActionRowBuilder().addComponents(steamInput),
+        new ActionRowBuilder().addComponents(hoursInput),
+        new ActionRowBuilder().addComponents(roleInput),
+        new ActionRowBuilder().addComponents(listenInput)
+      );
 
       await interaction.showModal(modal);
     }
   }
 
-  // ========== ОБРАБОТКА МОДАЛЬНЫХ ОКОН ==========
+  // ========== ОБРАБОТКА АНКЕТЫ ==========
   if (interaction.isModalSubmit()) {
     
     const customId = interaction.customId;
@@ -428,6 +600,7 @@ client.on('interactionCreate', async interaction => {
       const name = interaction.fields.getTextInputValue('name');
       const age = interaction.fields.getTextInputValue('age');
       const steam = interaction.fields.getTextInputValue('steam');
+      const hoursText = interaction.fields.getTextInputValue('hours');
       const role = interaction.fields.getTextInputValue('role');
       const listen = interaction.fields.getTextInputValue('listen');
       
@@ -437,31 +610,38 @@ client.on('interactionCreate', async interaction => {
         ? cfg.staffRoleId_stack1 
         : cfg.staffRoleId_stack2;
       
-      // ========== ПРОВЕРКА НА ДУРАКА: ЧАСЫ ДОЛЖНЫ БЫТЬ ЧИСЛОМ ==========
-      const hours = extractHours(steam);
+      // Проверка часов
+      const hoursNumber = parseInt(hoursText.replace(/\s+/g, ''));
+      
+      if (isNaN(hoursNumber) || hoursNumber <= 0) {
+        return interaction.reply({
+          content: '❌ **Ошибка!** Поле "Часы" должно содержать только цифры (например: 3500).',
+          ephemeral: true
+        });
+      }
+      
+      // Проверка ссылки на Steam
+      if (!steam.includes('steamcommunity.com')) {
+        return interaction.reply({
+          content: '❌ **Ошибка!** Пожалуйста, укажите корректную ссылку на Steam профиль.',
+          ephemeral: true
+        });
+      }
+      
+      // Проверка приватности
+      const isPrivate = await isSteamProfilePrivate(steam);
+      
+      if (isPrivate) {
+        return interaction.reply({
+          content: '❌ **Ошибка!** Ваш Steam профиль скрыт. Пожалуйста, откройте его в настройках приватности Steam.',
+          ephemeral: true
+        });
+      }
+      
       const minHours = stackType === 'stack1' ? 3500 : 2500;
       
-      // Если часы не найдены (0) и в тексте нет ссылки на steam
-      if (hours === 0 && !steam.toLowerCase().includes('steamcommunity.com')) {
-        await interaction.reply({
-          content: '❌ **Ошибка!** Вы не указали количество часов. Пожалуйста, укажите сколько часов у вас в Rust (например: "3500 часов").',
-          ephemeral: true
-        });
-        return;
-      }
-      
-      if (hours === 0) {
-        await interaction.reply({
-          content: '❌ **Ошибка!** Не удалось определить количество часов. Пожалуйста, напишите часы цифрами (например: "3500 часов" или "3.5k часов").',
-          ephemeral: true
-        });
-        return;
-      }
-      
-      lastApplicationTime.set(`${user.id}_${stackType}`, Date.now());
-      
-      // ========== АВТО-ОТКЛОНЕНИЕ ПО ЧАСАМ ==========
-      if (hours < minHours) {
+      // Авто-отклонение по часам
+      if (hoursNumber < minHours) {
         if (stackType === 'stack1') {
           stats.stack1.denied++;
           stats.stack1.weekDenied++;
@@ -476,10 +656,10 @@ client.on('interactionCreate', async interaction => {
         const autoDenyEmbed = new EmbedBuilder()
           .setTitle('❌ ЗАЯВКА ОТКЛОНЕНА АВТОМАТИЧЕСКИ')
           .setDescription(
-            `**К сожалению, ваша заявка в клан WINTER TEAM была отклонена автоматически.**\n\n` +
+            `**К сожалению, ваша заявка в клан WINTER TEAM была отклонена.**\n\n` +
             `**Причина:** Недостаточно часов в Rust\n` +
-            `**Ваши часы:** ${hours}\n` +
-            `**Минимум для ${stackType === 'stack1' ? 'СТАК 1' : 'СТАК 2'}:** ${minHours}+ часов\n\n` +
+            `**Ваши часы:** ${hoursNumber}\n` +
+            `**Минимум:** ${minHours}+ часов\n\n` +
             `Вы можете подать заявку снова, когда наберёте нужное количество часов.`
           )
           .setColor(0xFF0000)
@@ -493,7 +673,7 @@ client.on('interactionCreate', async interaction => {
           .addFields(
             { name: '👤 Заявитель', value: `<@${user.id}> (${user.tag})`, inline: true },
             { name: '📋 Состав', value: stackType === 'stack1' ? 'СТАК 1' : 'СТАК 2', inline: true },
-            { name: '⏰ Часы', value: `${hours} / ${minHours}`, inline: true },
+            { name: '⏰ Часы', value: `${hoursNumber} / ${minHours}`, inline: true },
             { name: '📝 Причина', value: 'Недостаточно часов', inline: false }
           )
           .setTimestamp();
@@ -517,22 +697,15 @@ client.on('interactionCreate', async interaction => {
           type: ChannelType.GuildText,
           parent: cfg.ticketCategory,
           permissionOverwrites: [
-            {
-              id: interaction.guild.id,
-              deny: [PermissionFlagsBits.ViewChannel]
-            },
-            {
-              id: user.id,
-              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]
-            },
-            {
-              id: staffRoleId,
-              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]
-            }
+            { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+            { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+            { id: staffRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
           ]
         });
 
-        activeTickets.set(`${user.id}_${stackType}`, {
+        const ticketId = `${user.id}_${stackType}`;
+        
+        activeTickets.set(ticketId, {
           channelId: ticketChannel.id,
           userId: user.id,
           stackType: stackType,
@@ -540,7 +713,9 @@ client.on('interactionCreate', async interaction => {
           createdAt: Date.now()
         });
 
-        // Сообщение о времени работы (если вне рабочего времени)
+        scheduleReminder(ticketChannel.id, staffRoleId, ticketId);
+        scheduleAutoDelete(ticketChannel.id, ticketId);
+
         const workingHoursMsg = getWorkingHoursMessage();
         
         const applicationEmbed = new EmbedBuilder()
@@ -551,7 +726,8 @@ client.on('interactionCreate', async interaction => {
             `**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n\n` +
             `👤 **Имя:** ${name}\n` +
             `🎂 **Возраст:** ${age}\n` +
-            `🎮 **Steam / Часы:** ${steam} (${hours} ч)\n` +
+            `🔗 **Steam:** ${steam}\n` +
+            `⏰ **Часы:** ${hoursNumber} ч\n` +
             `🎯 **Желаемая роль:** ${role}\n` +
             `👂 **Готовность слушать:** ${listen}` +
             workingHoursMsg
@@ -559,30 +735,11 @@ client.on('interactionCreate', async interaction => {
 
         const actionRow = new ActionRowBuilder()
           .addComponents(
-            new ButtonBuilder()
-              .setCustomId(`accept_${user.id}_${stackType}`)
-              .setLabel('✅ Принять')
-              .setStyle(ButtonStyle.Success),
-            
-            new ButtonBuilder()
-              .setCustomId(`consider_${user.id}_${stackType}`)
-              .setLabel('⏳ На рассмотрение')
-              .setStyle(ButtonStyle.Primary),
-            
-            new ButtonBuilder()
-              .setCustomId(`call_${user.id}_${stackType}`)
-              .setLabel('📞 На обзвон')
-              .setStyle(ButtonStyle.Secondary),
-            
-            new ButtonBuilder()
-              .setCustomId(`deny_${user.id}_${stackType}`)
-              .setLabel('❌ Отклонить')
-              .setStyle(ButtonStyle.Danger),
-            
-            new ButtonBuilder()
-              .setCustomId(`close_${ticketChannel.id}`)
-              .setLabel('🔒 Закрыть')
-              .setStyle(ButtonStyle.Secondary)
+            new ButtonBuilder().setCustomId(`accept_${user.id}_${stackType}`).setLabel('✅ Принять').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId(`consider_${user.id}_${stackType}`).setLabel('⏳ На рассмотрение').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId(`call_${user.id}_${stackType}`).setLabel('📞 На обзвон').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId(`deny_${user.id}_${stackType}`).setLabel('❌ Отклонить').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId(`close_${ticketChannel.id}`).setLabel('🔒 Закрыть').setStyle(ButtonStyle.Secondary)
           );
 
         await ticketChannel.send({
@@ -620,10 +777,7 @@ client.on('interactionCreate', async interaction => {
         : cfg.staffRoleId_stack2;
       
       if (!interaction.member.roles.cache.has(requiredStaffRoleId)) {
-        return interaction.reply({
-          content: '❌ У вас нет прав!',
-          ephemeral: true
-        });
+        return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
       }
       
       await interaction.reply({ content: '⏳ Обрабатываем...', ephemeral: true });
@@ -642,7 +796,20 @@ client.on('interactionCreate', async interaction => {
         }
         saveStats();
         
-        activeTickets.delete(`${targetUserId}_${stackType}`);
+        const ticketId = `${targetUserId}_${stackType}`;
+        
+        const reminderTimeout = reminderTimeouts.get(ticketId);
+        if (reminderTimeout) {
+          clearTimeout(reminderTimeout);
+          reminderTimeouts.delete(ticketId);
+        }
+        
+        const ticket = activeTickets.get(ticketId);
+        if (ticket?.autoDeleteTimeout) {
+          clearTimeout(ticket.autoDeleteTimeout);
+        }
+        
+        activeTickets.delete(ticketId);
         
         let targetUser;
         try {
@@ -659,19 +826,16 @@ client.on('interactionCreate', async interaction => {
                 `**К сожалению, ваша заявка в клан WINTER TEAM была ОТКЛОНЕНА.**\n\n` +
                 `🔥 **Состав:** ${stackName}\n` +
                 `👤 **Стафф:** ${interaction.user.tag}\n\n` +
-                `**Причина отклонения:**\n` +
-                `> ${reason}\n\n` +
+                `**Причина отклонения:**\n> ${reason}\n\n` +
                 `**Что дальше:**\n` +
                 `✅ Вы можете подать заявку повторно позже\n` +
-                `✅ Попробуйте подать заявку в другой состав (если подходите)\n` +
-                `✅ Улучшайте свои навыки и приходите снова!\n\n` +
                 `🍀 Удачи в поиске клана!`
               )
               .setColor(0xFF0000);
             
             await targetUser.send({ embeds: [dmEmbed] });
           } catch (error) {
-            console.error(`❌ Не удалось отправить ЛС пользователю ${targetUserId}:`, error);
+            console.error(`❌ Не удалось отправить ЛС:`, error);
           }
         }
         
@@ -733,6 +897,21 @@ client.on('interactionCreate', async interaction => {
       const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
       const channelName = channel?.name || 'Неизвестный канал';
       
+      for (const [ticketId, ticket] of activeTickets) {
+        if (ticket.channelId === channelId) {
+          const reminderTimeout = reminderTimeouts.get(ticketId);
+          if (reminderTimeout) {
+            clearTimeout(reminderTimeout);
+            reminderTimeouts.delete(ticketId);
+          }
+          if (ticket.autoDeleteTimeout) {
+            clearTimeout(ticket.autoDeleteTimeout);
+          }
+          activeTickets.delete(ticketId);
+          break;
+        }
+      }
+      
       const logEmbed = new EmbedBuilder()
         .setTitle('🔒 Тикет закрыт')
         .setColor(0x808080)
@@ -746,9 +925,7 @@ client.on('interactionCreate', async interaction => {
       
       setTimeout(async () => {
         try {
-          if (channel) {
-            await channel.delete();
-          }
+          if (channel) await channel.delete();
         } catch (error) {
           console.error('Ошибка закрытия канала:', error);
         }
@@ -789,13 +966,14 @@ client.on('interactionCreate', async interaction => {
         console.error(`❌ Не удалось найти пользователя ${targetUserId}:`, error);
       }
       
+      const ticketId = `${targetUserId}_${stackType}`;
+      
       // ПРИНЯТЬ
       if (action === 'accept') {
-        const embed = EmbedBuilder.from(originalEmbed)
-          .setColor(0x00FF00);
+        const embed = EmbedBuilder.from(originalEmbed).setColor(0x00FF00);
         
         await interaction.update({ embeds: [embed], components: [] });
-        await channel.send(`<@${targetUserId}> 🎉 **Поздравляем! Ваша заявка в ${stackName} ПРИНЯТА!** Свяжитесь с лидером.`);
+        await channel.send(`<@${targetUserId}> 🎉 **Поздравляем! Ваша заявка в ${stackName} ПРИНЯТА!**`);
         
         if (stackType === 'stack1') {
           stats.stack1.accepted++;
@@ -806,20 +984,27 @@ client.on('interactionCreate', async interaction => {
         }
         saveStats();
         
-        // ВЫДАЁМ РОЛЬ
         if (cfg.memberRoleId) {
           try {
             const member = await interaction.guild.members.fetch(targetUserId);
             await member.roles.add(cfg.memberRoleId);
             await channel.send(`✅ Роль <@&${cfg.memberRoleId}> выдана участнику.`);
-            console.log(`✅ Роль выдана пользователю ${targetUser?.tag}`);
           } catch (error) {
             console.error('❌ Ошибка выдачи роли:', error);
-            await channel.send(`⚠️ Не удалось выдать роль. Проверьте права бота.`);
           }
         }
         
-        activeTickets.delete(`${targetUserId}_${stackType}`);
+        const reminderTimeout = reminderTimeouts.get(ticketId);
+        if (reminderTimeout) {
+          clearTimeout(reminderTimeout);
+          reminderTimeouts.delete(ticketId);
+        }
+        
+        const ticket = activeTickets.get(ticketId);
+        if (ticket?.autoDeleteTimeout) {
+          clearTimeout(ticket.autoDeleteTimeout);
+        }
+        activeTickets.delete(ticketId);
         
         const logEmbed = new EmbedBuilder()
           .setTitle('✅ Заявка принята')
@@ -827,8 +1012,7 @@ client.on('interactionCreate', async interaction => {
           .addFields(
             { name: '👤 Заявитель', value: `<@${targetUserId}> (${targetUser?.tag || targetUserId})`, inline: true },
             { name: '👮 Стафф', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
-            { name: '📋 Состав', value: stackName, inline: true },
-            { name: '🎯 Роль', value: cfg.memberRoleId ? '✅ Выдана' : '❌ Не настроена', inline: true }
+            { name: '📋 Состав', value: stackName, inline: true }
           )
           .setTimestamp();
         
@@ -837,11 +1021,9 @@ client.on('interactionCreate', async interaction => {
         setTimeout(async () => {
           try {
             const channelToDelete = await client.channels.fetch(channel.id).catch(() => null);
-            if (channelToDelete) {
-              await channelToDelete.delete();
-            }
+            if (channelToDelete) await channelToDelete.delete();
           } catch (error) {
-            console.error('Ошибка удаления канала по таймеру:', error);
+            console.error('Ошибка удаления канала:', error);
           }
         }, 12 * 60 * 60 * 1000);
         
@@ -855,25 +1037,22 @@ client.on('interactionCreate', async interaction => {
                 `**Поздравляем! Ваша заявка в клан WINTER TEAM ПРИНЯТА!**\n\n` +
                 `🔥 **Состав:** ${stackName}\n` +
                 `👤 **Стафф:** ${interaction.user.tag}\n\n` +
-                `**Дальнейшие действия:**\n` +
                 `✅ Свяжитесь с лидером\n` +
-                `✅ Ознакомьтесь с правилами клана\n` +
-                `✅ Добро пожаловать в команду!\n\n` +
+                `✅ Ознакомьтесь с правилами\n` +
                 `🎮 Удачной игры!`
               )
               .setColor(0x00FF00);
             
             await targetUser.send({ embeds: [dmEmbed] });
           } catch (error) {
-            console.error(`❌ Не удалось отправить ЛС пользователю ${targetUserId}:`, error);
+            console.error(`❌ Не удалось отправить ЛС:`, error);
           }
         }
       } 
       
       // НА РАССМОТРЕНИЕ
       else if (action === 'consider') {
-        const embed = EmbedBuilder.from(originalEmbed)
-          .setColor(0xFFA500);
+        const embed = EmbedBuilder.from(originalEmbed).setColor(0xFFA500);
         
         await interaction.update({ embeds: [embed], components: [interaction.message.components[0]] });
         await channel.send(`<@${targetUserId}> Ваша заявка в **${stackName}** взята **НА РАССМОТРЕНИЕ**.`);
@@ -886,28 +1065,44 @@ client.on('interactionCreate', async interaction => {
                 `**Ваша заявка в клан WINTER TEAM взята НА РАССМОТРЕНИЕ!**\n\n` +
                 `🔥 **Состав:** ${stackName}\n` +
                 `👤 **Стафф:** ${interaction.user.tag}\n\n` +
-                `**Что это значит:**\n` +
-                `✅ Ваша заявка заинтересовала стафф\n` +
-                `✅ Решение будет принято в ближайшее время\n` +
-                `✅ Ожидайте дальнейших уведомлений\n\n` +
-                `📌 Следите за каналом заявки!`
+                `Ожидайте дальнейших уведомлений.`
               )
               .setColor(0xFFA500);
             
             await targetUser.send({ embeds: [dmEmbed] });
           } catch (error) {
-            console.error(`❌ Не удалось отправить ЛС пользователю ${targetUserId}:`, error);
+            console.error(`❌ Не удалось отправить ЛС:`, error);
           }
         }
       } 
       
       // НА ОБЗВОН
       else if (action === 'call') {
-        const embed = EmbedBuilder.from(originalEmbed)
-          .setColor(0x808080);
+        const embed = EmbedBuilder.from(originalEmbed).setColor(0x808080);
         
         await interaction.update({ embeds: [embed], components: [interaction.message.components[0]] });
-        await channel.send(`<@${targetUserId}> 📞 Вы **ВЫЗВАНЫ НА ОБЗВОН** в **${stackName}**. Будьте готовы к вопросам в войсе.`);
+        
+        const staffMember = interaction.member;
+        const voiceChannel = staffMember.voice.channel;
+        
+        let voiceInvite = '';
+        if (voiceChannel) {
+          try {
+            const invite = await voiceChannel.createInvite({
+              maxAge: 86400,
+              maxUses: 1,
+              reason: `Обзвон для заявки ${targetUserId}`
+            });
+            voiceInvite = `\n\n🔊 **Голосовой канал:** ${invite.url}`;
+          } catch (error) {
+            console.error('Ошибка создания приглашения:', error);
+            voiceInvite = '\n\n⚠️ Не удалось создать приглашение в канал.';
+          }
+        } else {
+          voiceInvite = '\n\n⚠️ Стафф не находится в голосовом канале.';
+        }
+        
+        await channel.send(`<@${targetUserId}> 📞 Вы **ВЫЗВАНЫ НА ОБЗВОН** в **${stackName}**.${voiceInvite}`);
         
         if (targetUser) {
           try {
@@ -917,24 +1112,21 @@ client.on('interactionCreate', async interaction => {
                 `**Вы были вызваны на обзвон в клан WINTER TEAM!**\n\n` +
                 `🔥 **Состав:** ${stackName}\n` +
                 `👤 **Стафф:** ${interaction.user.tag}\n\n` +
-                `**Пожалуйста, будьте готовы:**\n` +
-                `✅ Иметь рабочий микрофон\n` +
-                `✅ Ответить на вопросы о вашем опыте\n` +
-                `✅ Показать часы в Rust (если потребуется)\n` +
-                `✅ Быть адекватным и вежливым\n\n` +
-                `📌 Зайдите в голосовой канал и ожидайте стаффа.\n` +
-                `⏰ У вас есть 10-15 минут, чтобы присоединиться!`
+                `**Подготовьтесь:**\n` +
+                `✅ Рабочий микрофон\n` +
+                `✅ Ответы на вопросы\n` +
+                `✅ Часы в Rust${voiceInvite ? `\n\n${voiceInvite}` : ''}`
               )
               .setColor(0x808080);
             
             await targetUser.send({ embeds: [dmEmbed] });
           } catch (error) {
-            console.error(`❌ Не удалось отправить ЛС пользователю ${targetUserId}:`, error);
+            console.error(`❌ Не удалось отправить ЛС:`, error);
           }
         }
       } 
       
-      // ОТКЛОНИТЬ (открываем модальное окно)
+      // ОТКЛОНИТЬ
       else if (action === 'deny') {
         const modal = new ModalBuilder()
           .setCustomId(`deny_reason_${targetUserId}_${stackType}_${channel.id}`)
@@ -948,8 +1140,7 @@ client.on('interactionCreate', async interaction => {
           .setRequired(true)
           .setMaxLength(500);
         
-        const reasonRow = new ActionRowBuilder().addComponents(reasonInput);
-        modal.addComponents(reasonRow);
+        modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
         
         await interaction.showModal(modal);
       }
@@ -957,51 +1148,20 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-client.on('error', error => {
-  console.error('❌ Ошибка клиента:', error);
-});
+client.on('error', error => console.error('❌ Ошибка клиента:', error));
+process.on('unhandledRejection', error => console.error('❌ Необработанная ошибка:', error));
 
-process.on('unhandledRejection', error => {
-  console.error('❌ Необработанная ошибка:', error);
-});
-
-// ========== ЗАПУСК БОТА ==========
+// ========== ЗАПУСК ==========
 const token = process.env.DISCORD_TOKEN || (config.token || null);
+if (!token) { console.error('❌ ТОКЕН НЕ НАЙДЕН!'); process.exit(1); }
 
-if (!token) {
-  console.error('❌ ТОКЕН НЕ НАЙДЕН!');
-  process.exit(1);
-}
-
-client.login(token).catch(error => {
-  console.error('❌ Ошибка входа:', error);
-  process.exit(1);
-});
+client.login(token).catch(error => { console.error('❌ Ошибка входа:', error); process.exit(1); });
 
 // ========== HTTP СЕРВЕР ==========
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <title>WINTER TEAM Bot</title>
-      <style>
-        body { font-family: Arial; text-align: center; padding: 50px; background: #1a1a1a; color: white; }
-        h1 { color: #3498DB; }
-      </style>
-    </head>
-    <body>
-      <h1>💧 WINTER TEAM BOT</h1>
-      <p>Бот работает!</p>
-      <p>Статус: 🟢 Online</p>
-    </body>
-    </html>
-  `);
+  res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>WINTER TEAM Bot</title><style>body{font-family:Arial;text-align:center;padding:50px;background:#1a1a1a;color:white}h1{color:#3498DB}</style></head><body><h1>💧 WINTER TEAM BOT</h1><p>Бот работает!</p><p>Статус: 🟢 Online</p></body></html>`);
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`✅ HTTP сервер запущен на порту ${PORT}`);
-});
+server.listen(PORT, () => console.log(`✅ HTTP сервер запущен на порту ${PORT}`));
