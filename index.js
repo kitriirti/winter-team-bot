@@ -225,136 +225,121 @@ client.on('interactionCreate', async interaction => {
   
   const cfg = getConfig();
   
-  // ========== КОМАНДА /compress ==========
-  if (interaction.isCommand() && interaction.commandName === 'compress') {
-    
-    const modal = new ModalBuilder()
-      .setCustomId('compress_modal')
-      .setTitle('📷 Отправить изображение');
-    
-    const commentInput = new TextInputBuilder()
-      .setCustomId('comment')
-      .setLabel('Комментарий к фото')
-      .setPlaceholder('Ваш комментарий...')
-      .setStyle(TextInputStyle.Paragraph)
-      .setRequired(false)
-      .setMaxLength(500);
-    
-    const urlInput = new TextInputBuilder()
-      .setCustomId('image_url')
-      .setLabel('Ссылка или вставьте фото (Ctrl+V)')
-      .setPlaceholder('https://... или Ctrl+V')
-      .setStyle(TextInputStyle.Paragraph)
-      .setRequired(true);
-    
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(commentInput),
-      new ActionRowBuilder().addComponents(urlInput)
-    );
-    
-    await interaction.showModal(modal);
-  }
+// ========== КОМАНДА /compress ==========
+if (interaction.isCommand() && interaction.commandName === 'compress') {
   
-  // ========== ОБРАБОТКА МОДАЛЬНОГО ОКНА /compress ==========
-  if (interaction.isModalSubmit() && interaction.customId === 'compress_modal') {
-    const inputText = interaction.fields.getTextInputValue('image_url');
-    const comment = interaction.fields.getTextInputValue('comment') || null;
+  const modal = new ModalBuilder()
+    .setCustomId('compress_modal')
+    .setTitle('📷 Отправить изображение');
+  
+  const commentInput = new TextInputBuilder()
+    .setCustomId('comment')
+    .setLabel('Комментарий к фото')
+    .setPlaceholder('Ваш комментарий...')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false)
+    .setMaxLength(500);
+  
+  const urlInput = new TextInputBuilder()
+    .setCustomId('image_url')
+    .setLabel('Ссылка на изображение')
+    .setPlaceholder('https://files.catbox.moe/abc.png')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
+  
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(commentInput),
+    new ActionRowBuilder().addComponents(urlInput)
+  );
+  
+  await interaction.showModal(modal);
+}
+
+// ========== ОБРАБОТКА МОДАЛЬНОГО ОКНА /compress ==========
+if (interaction.isModalSubmit() && interaction.customId === 'compress_modal') {
+  const url = interaction.fields.getTextInputValue('image_url').trim();
+  const comment = interaction.fields.getTextInputValue('comment') || null;
+  
+  // ОТВЕЧАЕМ СРАЗУ, НО НЕ ПОКАЗЫВАЕМ КТО ВВЁЛ КОМАНДУ
+  await interaction.deferReply();
+  
+  try {
+    // Проверяем, что это ссылка
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      return interaction.editReply('❌ **Ошибка!** Пожалуйста, вставьте прямую ссылку на изображение (начинается с http:// или https://).');
+    }
     
-    await interaction.deferReply();
+    // Скачиваем изображение
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
     
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    
+    const imageBuffer = Buffer.from(await response.arrayBuffer());
+    
+    // Проверяем размер (Discord лимит 10 МБ)
+    if (imageBuffer.length > 10 * 1024 * 1024) {
+      const sizeMB = (imageBuffer.length / (1024 * 1024)).toFixed(2);
+      return interaction.editReply(`❌ **Ошибка!** Изображение слишком большое (${sizeMB} МБ). Discord не принимает файлы больше 10 МБ.`);
+    }
+    
+    // Определяем расширение
+    let extension = 'jpg';
+    const contentType = response.headers.get('content-type') || '';
+    
+    if (contentType.includes('png')) extension = 'png';
+    else if (contentType.includes('webp')) extension = 'webp';
+    else if (contentType.includes('gif')) extension = 'gif';
+    else if (url.toLowerCase().includes('.png')) extension = 'png';
+    else if (url.toLowerCase().includes('.webp')) extension = 'webp';
+    else if (url.toLowerCase().includes('.gif')) extension = 'gif';
+    
+    // Создаём Embed БЕЗ ДАТЫ И ИНФОРМАЦИИ О ПОЛЬЗОВАТЕЛЕ
+    const embed = new EmbedBuilder()
+      .setColor(0x2B2D31)
+      .setImage(`attachment://image.${extension}`);
+    
+    // Добавляем комментарий большими буквами
+    if (comment) {
+      embed.setDescription(`**${comment}**`);
+    }
+    
+    // ОТПРАВЛЯЕМ КАК ОБЫЧНОЕ СООБЩЕНИЕ (не reply), чтобы скрыть автора
+    await interaction.deleteReply(); // Удаляем "defer" сообщение
+    
+    // Отправляем в канал как обычное сообщение (без указания кто ввёл команду)
+    await interaction.channel.send({
+      embeds: [embed],
+      files: [{ 
+        attachment: imageBuffer, 
+        name: `image.${extension}` 
+      }]
+    });
+    
+  } catch (error) {
+    console.error('Ошибка загрузки:', error.message);
+    
+    // Если не удалось скачать, пробуем просто вставить ссылку
     try {
-      let imageBuffer = null;
-      let extension = 'jpg';
-      
-      if (inputText.startsWith('http://') || inputText.startsWith('https://')) {
-        // Это ссылка
-        const response = await fetch(inputText, {
-          headers: { 'User-Agent': 'Mozilla/5.0' }
-        });
-        
-        if (!response.ok) throw new Error('HTTP error');
-        
-        imageBuffer = Buffer.from(await response.arrayBuffer());
-        
-        const contentType = response.headers.get('content-type') || '';
-        if (contentType.includes('png')) extension = 'png';
-        else if (contentType.includes('webp')) extension = 'webp';
-        else if (contentType.includes('gif')) extension = 'gif';
-        else if (inputText.includes('.png')) extension = 'png';
-        else if (inputText.includes('.webp')) extension = 'webp';
-        else if (inputText.includes('.gif')) extension = 'gif';
-        
-      } else if (inputText.startsWith('data:image/')) {
-        // Это вставленное изображение (base64)
-        const matches = inputText.match(/^data:image\/(\w+);base64,(.+)$/);
-        if (matches) {
-          extension = matches[1];
-          imageBuffer = Buffer.from(matches[2], 'base64');
-        }
-      } else {
-        // Пробуем распарсить как base64 без префикса
-        try {
-          imageBuffer = Buffer.from(inputText, 'base64');
-          if (imageBuffer.length < 100) throw new Error('Not an image');
-        } catch {
-          return interaction.editReply('❌ **Ошибка!** Вставьте прямую ссылку на изображение или скопируйте фото через Ctrl+V.');
-        }
-      }
-      
-      if (!imageBuffer) {
-        return interaction.editReply('❌ **Ошибка!** Не удалось получить изображение.');
-      }
-      
-      // Проверка размера (Discord лимит 10 МБ)
-      if (imageBuffer.length > 10 * 1024 * 1024) {
-        const sizeMB = (imageBuffer.length / (1024 * 1024)).toFixed(2);
-        return interaction.editReply(`❌ **Ошибка!** Изображение слишком большое (${sizeMB} МБ). Discord не принимает файлы больше 10 МБ.`);
-      }
-      
       const embed = new EmbedBuilder()
         .setColor(0x2B2D31)
-        .setImage(`attachment://image.${extension}`);
+        .setImage(url);
       
       if (comment) {
         embed.setDescription(`**${comment}**`);
       }
       
-      await interaction.editReply({
-        content: null,
-        embeds: [embed],
-        files: [{ 
-          attachment: imageBuffer, 
-          name: `image.${extension}` 
-        }]
-      });
+      await interaction.deleteReply();
+      await interaction.channel.send({ embeds: [embed] });
       
-    } catch (error) {
-      console.error('Ошибка загрузки:', error.message);
-      
-      // Fallback: просто вставить ссылку
-      if (inputText.startsWith('http')) {
-        try {
-          const embed = new EmbedBuilder()
-            .setColor(0x2B2D31)
-            .setImage(inputText);
-          
-          if (comment) {
-            embed.setDescription(`**${comment}**`);
-          }
-          
-          await interaction.editReply({
-            content: null,
-            embeds: [embed]
-          });
-        } catch {
-          await interaction.editReply('❌ Не удалось загрузить изображение.');
-        }
-      } else {
-        await interaction.editReply('❌ Не удалось загрузить изображение. Попробуйте использовать ссылку на Catbox.moe или ImgBB.');
-      }
+    } catch (embedError) {
+      await interaction.editReply('❌ Не удалось загрузить изображение. Проверьте ссылку.');
     }
   }
-  
+}
   // ========== КОМАНДА /ping ==========
   if (interaction.isCommand() && interaction.commandName === 'ping') {
     const sent = await interaction.reply({ content: '🏓 Пинг...', fetchReply: true, ephemeral: true });
