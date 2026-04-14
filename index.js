@@ -91,39 +91,6 @@ async function sendLog(channelId, embed) {
   }
 }
 
-function extractHours(text) {
-  const cleanText = text.toLowerCase().trim();
-  const matches = cleanText.match(/(\d+[\s,]?\d*)\s*(?:часов?|hours?|ч|h)/i);
-  if (matches) {
-    return parseInt(matches[1].replace(/[\s,]/g, ''));
-  }
-  const numbers = cleanText.match(/\d+/g);
-  if (numbers) {
-    return Math.max(...numbers.map(n => parseInt(n)));
-  }
-  return 0;
-}
-
-async function extractSteamID(text) {
-  const steamIDMatch = text.match(/(7656\d{13})/);
-  if (steamIDMatch) return steamIDMatch[1];
-  
-  const profilesMatch = text.match(/steamcommunity\.com\/profiles\/(\d+)/);
-  if (profilesMatch) return profilesMatch[1];
-  
-  const customMatch = text.match(/steamcommunity\.com\/id\/([^\/\s]+)/);
-  if (customMatch) return customMatch[1];
-  
-  return null;
-}
-
-function getBattleMetricsUrl(steamID) {
-  if (/^\d+$/.test(steamID)) {
-    return `https://www.battlemetrics.com/players/${steamID}`;
-  }
-  return `https://www.battlemetrics.com/players/steam?url=https%3A%2F%2Fsteamcommunity.com%2Fid%2F${steamID}`;
-}
-
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} успешно запущен!`);
   client.user.setActivity('заявки в клан WT', { type: 3 });
@@ -219,19 +186,36 @@ client.on('interactionCreate', async interaction => {
       const embed = ticketMessage.embeds[0];
       const description = embed.description || '';
       
-      const steamMatch = description.match(/🎮\s\*\*Steam \/ Часы:\*\*\s(.+?)(?:\n|$)/);
+      // Ищем Steam ссылку (теперь в отдельном поле 🔗 **Steam:**)
+      const steamMatch = description.match(/🔗\s*\*\*Steam:\*\*\s*([^\n]+)/);
       if (!steamMatch) {
-        return interaction.editReply({ content: '❌ Не удалось найти Steam ссылку в заявке!' });
+        return interaction.editReply({ content: '❌ Не удалось найти Steam в заявке!' });
       }
       
-      const steamText = steamMatch[1];
-      const steamID = await extractSteamID(steamText);
+      const steamText = steamMatch[1].trim();
+      
+      // Извлекаем Steam ID
+      let steamID = null;
+      
+      const idMatch = steamText.match(/(7656\d{13})/);
+      if (idMatch) steamID = idMatch[1];
+      
+      const profilesMatch = steamText.match(/steamcommunity\.com\/profiles\/(\d+)/);
+      if (profilesMatch) steamID = profilesMatch[1];
+      
+      const customMatch = steamText.match(/steamcommunity\.com\/id\/([^\/\s\)]+)/);
+      if (customMatch) steamID = customMatch[1];
       
       if (!steamID) {
         return interaction.editReply({ content: '❌ Не удалось извлечь Steam ID из ссылки!' });
       }
       
-      const bmUrl = getBattleMetricsUrl(steamID);
+      let bmUrl;
+      if (/^\d+$/.test(steamID)) {
+        bmUrl = `https://www.battlemetrics.com/players/${steamID}`;
+      } else {
+        bmUrl = `https://www.battlemetrics.com/players/steam?url=https%3A%2F%2Fsteamcommunity.com%2Fid%2F${steamID}`;
+      }
       
       const bmEmbed = new EmbedBuilder()
         .setTitle('🎮 BattleMetrics профиль')
@@ -378,7 +362,7 @@ client.on('interactionCreate', async interaction => {
     });
   }
 
-  // ========== ОБРАБОТКА КНОПОК ==========
+  // ========== ОБРАБОТКА КНОПОК (открытие анкеты) ==========
   if (interaction.isButton()) {
     
     let stackType = '';
@@ -430,11 +414,19 @@ client.on('interactionCreate', async interaction => {
 
       const steamInput = new TextInputBuilder()
         .setCustomId('steam')
-        .setLabel('Ссылка на Steam / Сколько часов?')
-        .setPlaceholder(stackType === 'stack1' ? 'https://steamcommunity.com/... / 3500+ часов' : 'https://steamcommunity.com/... / 2500+ часов')
+        .setLabel('Ссылка на Steam профиль')
+        .setPlaceholder('https://steamcommunity.com/profiles/... или /id/...')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
         .setMaxLength(200);
+
+      const hoursInput = new TextInputBuilder()
+        .setCustomId('hours')
+        .setLabel('Сколько часов в Rust?')
+        .setPlaceholder(stackType === 'stack1' ? '3500' : '2500')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(10);
 
       const roleInput = new TextInputBuilder()
         .setCustomId('role')
@@ -456,6 +448,7 @@ client.on('interactionCreate', async interaction => {
         new ActionRowBuilder().addComponents(nameInput),
         new ActionRowBuilder().addComponents(ageInput),
         new ActionRowBuilder().addComponents(steamInput),
+        new ActionRowBuilder().addComponents(hoursInput),
         new ActionRowBuilder().addComponents(roleInput),
         new ActionRowBuilder().addComponents(listenInput)
       );
@@ -476,6 +469,7 @@ client.on('interactionCreate', async interaction => {
       const name = interaction.fields.getTextInputValue('name');
       const age = interaction.fields.getTextInputValue('age');
       const steam = interaction.fields.getTextInputValue('steam');
+      const hoursText = interaction.fields.getTextInputValue('hours');
       const role = interaction.fields.getTextInputValue('role');
       const listen = interaction.fields.getTextInputValue('listen');
       
@@ -485,18 +479,20 @@ client.on('interactionCreate', async interaction => {
         ? cfg.staffRoleId_stack1 
         : cfg.staffRoleId_stack2;
       
-      const hours = extractHours(steam);
-      const minHours = stackType === 'stack1' ? 3500 : 2500;
+      // Проверка часов
+      const hoursNumber = parseInt(hoursText.replace(/\s+/g, ''));
       
-      if (hours === 0) {
-        await interaction.reply({
-          content: '❌ **Ошибка!** Не удалось определить количество часов. Пожалуйста, напишите часы цифрами.',
+      if (isNaN(hoursNumber) || hoursNumber <= 0) {
+        return interaction.reply({
+          content: '❌ **Ошибка!** Поле "Часы" должно содержать только цифры (например: 3500).',
           ephemeral: true
         });
-        return;
       }
       
-      if (hours < minHours) {
+      const minHours = stackType === 'stack1' ? 3500 : 2500;
+      
+      // Авто-отклонение по часам
+      if (hoursNumber < minHours) {
         if (stackType === 'stack1') {
           stats.stack1.denied++;
           stats.stack1.weekDenied++;
@@ -511,9 +507,9 @@ client.on('interactionCreate', async interaction => {
         const autoDenyEmbed = new EmbedBuilder()
           .setTitle('❌ ЗАЯВКА ОТКЛОНЕНА АВТОМАТИЧЕСКИ')
           .setDescription(
-            `**К сожалению, ваша заявка в клан WINTER TEAM была отклонена автоматически.**\n\n` +
+            `**К сожалению, ваша заявка в клан WINTER TEAM была отклонена.**\n\n` +
             `**Причина:** Недостаточно часов в Rust\n` +
-            `**Ваши часы:** ${hours}\n` +
+            `**Ваши часы:** ${hoursNumber}\n` +
             `**Минимум:** ${minHours}+ часов\n\n` +
             `Вы можете подать заявку снова, когда наберёте нужное количество часов.`
           )
@@ -563,7 +559,8 @@ client.on('interactionCreate', async interaction => {
             `**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n\n` +
             `👤 **Имя:** ${name}\n` +
             `🎂 **Возраст:** ${age}\n` +
-            `🎮 **Steam / Часы:** ${steam} (${hours} ч)\n` +
+            `🔗 **Steam:** ${steam}\n` +
+            `⏰ **Часы:** ${hoursNumber} ч\n` +
             `🎯 **Желаемая роль:** ${role}\n` +
             `👂 **Готовность слушать:** ${listen}` +
             workingHoursMsg
@@ -620,6 +617,13 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ content: '🔒 Закрываю канал...', ephemeral: true });
       
       const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
+      
+      for (const [ticketId, ticket] of activeTickets) {
+        if (ticket.channelId === channelId) {
+          activeTickets.delete(ticketId);
+          break;
+        }
+      }
       
       setTimeout(async () => {
         try {
@@ -753,7 +757,7 @@ client.on('interactionCreate', async interaction => {
         
         await interaction.update({ embeds: [embed], components: [interaction.message.components[0]] });
         
-        // ССЫЛКА НА ВОЙС ПРИ ОБЗВОНЕ
+        // ССЫЛКА НА ВОЙС
         const staffMember = interaction.member;
         const voiceChannel = staffMember.voice.channel;
         
