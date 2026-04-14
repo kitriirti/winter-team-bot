@@ -264,48 +264,93 @@ client.on('interactionCreate', async interaction => {
     
     try {
       // Скачиваем изображение
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
       if (!response.ok) {
-        return interaction.editReply('❌ Не удалось скачать изображение! Проверьте ссылку.');
+        throw new Error(`HTTP ${response.status}`);
       }
       
       const imageBuffer = Buffer.from(await response.arrayBuffer());
       const imageSize = (imageBuffer.length / (1024 * 1024)).toFixed(2);
       
-      // Определяем расширение из URL
+      // Проверяем размер (Discord лимит 10 МБ)
+      if (imageBuffer.length > 10 * 1024 * 1024) {
+        return interaction.editReply(`❌ **Ошибка!** Изображение слишком большое (${imageSize} МБ). Discord не принимает файлы больше 10 МБ.\n\nПопробуйте сжать изображение или использовать ссылку на изображение меньшего размера.`);
+      }
+      
+      // Определяем расширение
       let extension = 'jpg';
-      if (url.toLowerCase().includes('.png')) extension = 'png';
-      if (url.toLowerCase().includes('.webp')) extension = 'webp';
-      if (url.toLowerCase().includes('.gif')) extension = 'gif';
+      const contentType = response.headers.get('content-type') || '';
       
-      await interaction.editReply({
-        content: `✅ Изображение загружено (${imageSize} МБ). Отправляю...`
-      });
+      if (contentType.includes('png')) extension = 'png';
+      else if (contentType.includes('webp')) extension = 'webp';
+      else if (contentType.includes('gif')) extension = 'gif';
+      else if (url.toLowerCase().includes('.png')) extension = 'png';
+      else if (url.toLowerCase().includes('.webp')) extension = 'webp';
+      else if (url.toLowerCase().includes('.gif')) extension = 'gif';
+      else if (url.toLowerCase().includes('.jpg') || url.toLowerCase().includes('.jpeg')) extension = 'jpg';
       
-      // Создаём Embed с серой рамкой для комментария
+      // Создаём Embed с превью
       const embed = new EmbedBuilder()
-        .setColor(0x2B2D31) // Тёмно-серый цвет
+        .setColor(0x2B2D31)
         .setImage(`attachment://image.${extension}`)
         .setFooter({ text: `Размер: ${imageSize} МБ` })
         .setTimestamp();
       
-      // Если есть комментарий - добавляем его в серой рамке (цитата)
       if (comment) {
-        embed.setDescription(`> ${comment}\n\n*Источник:* ${url}`);
+        embed.setDescription(`> ${comment}\n\n📎 *Источник:* ${url}`);
       } else {
-        embed.setDescription(`*Источник:* ${url}`);
+        embed.setDescription(`📎 *Источник:* ${url}`);
       }
       
-      // Отправляем изображение
+      // Отправляем файл с Embed
       await interaction.editReply({
         content: null,
         embeds: [embed],
-        files: [{ attachment: imageBuffer, name: `image.${extension}` }]
+        files: [{ 
+          attachment: imageBuffer, 
+          name: `image.${extension}` 
+        }]
       });
       
     } catch (error) {
-      console.error('Ошибка загрузки:', error);
-      await interaction.editReply('❌ Произошла ошибка при загрузке изображения!');
+      console.error('Ошибка загрузки файла:', error.message);
+      
+      // Пробуем вариант 2: просто вставить ссылку в Embed (без скачивания)
+      try {
+        const embed = new EmbedBuilder()
+          .setColor(0x2B2D31)
+          .setImage(url)
+          .setFooter({ text: 'Превью может не отображаться для некоторых сайтов' })
+          .setTimestamp();
+        
+        if (comment) {
+          embed.setDescription(`> ${comment}\n\n📎 *Источник:* ${url}`);
+        } else {
+          embed.setDescription(`📎 *Источник:* ${url}`);
+        }
+        
+        await interaction.editReply({
+          content: '⚠️ Не удалось скачать файл напрямую. Показываю ссылку.',
+          embeds: [embed]
+        });
+        
+      } catch (embedError) {
+        // Вариант 3: просто текстовая ссылка
+        let replyContent = '';
+        if (comment) {
+          replyContent = `> ${comment}\n\n`;
+        }
+        replyContent += `📷 **Ссылка на изображение:** ${url}\n\n⚠️ Не удалось отобразить превью. Откройте ссылку в браузере.`;
+        
+        await interaction.editReply({
+          content: replyContent
+        });
+      }
     }
   }
   
