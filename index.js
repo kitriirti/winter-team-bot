@@ -14,7 +14,12 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildVoiceStates
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.DirectMessages // Для ЛС
+  ],
+  partials: [
+    'CHANNEL', // Для DM
+    'MESSAGE'
   ]
 });
 
@@ -182,11 +187,9 @@ client.once('ready', async () => {
   const cfg = getConfig();
   
   try {
-    // Удаляем ВСЕ старые команды
     const globalCommands = await client.application.commands.fetch();
     for (const command of globalCommands.values()) {
       await command.delete();
-      console.log(`🗑️ Удалена глобальная команда: ${command.name}`);
     }
     
     const guild = client.guilds.cache.get(cfg.guildId);
@@ -194,11 +197,9 @@ client.once('ready', async () => {
       const guildCommands = await guild.commands.fetch();
       for (const command of guildCommands.values()) {
         await command.delete();
-        console.log(`🗑️ Удалена команда сервера: ${command.name}`);
       }
     }
     
-    // Регистрируем только нужные команды
     await client.application.commands.create({
       name: 'ticket_stack1',
       description: 'Создать сообщение для подачи заявок в СТАК 1 (3500+ часов)'
@@ -224,118 +225,107 @@ client.once('ready', async () => {
       description: 'Проверить задержку бота'
     });
     
-    await client.application.commands.create({
-      name: 'compress',
-      description: 'Отправить изображение по ссылке'
-    });
-    
     console.log('✅ Команды зарегистрированы!');
   } catch (error) {
     console.error('❌ Ошибка регистрации команд:', error);
   }
   
   console.log('✅ Бот готов к работе!');
-  console.log(`🔧 Статус приёма: СТАК 1 = ${ticketStatus.stack1 ? '🟢 Открыт' : '🔴 Закрыт'}, СТАК 2 = ${ticketStatus.stack2 ? '🟢 Открыт' : '🔴 Закрыт'}`);
+});
+
+// ========== ОБРАБОТКА СООБЩЕНИЙ В ЛС (!compress) ==========
+client.on('messageCreate', async message => {
+  // Игнорируем сообщения от ботов
+  if (message.author.bot) return;
+  
+  // Только в ЛС
+  if (message.channel.type !== ChannelType.DM) return;
+  
+  // Проверяем команду
+  if (!message.content.startsWith('!compress')) return;
+  
+  // Парсим: !compress #канал Описание
+  const args = message.content.slice('!compress'.length).trim().split(/ (.+)/);
+  const channelMention = args[0]?.trim();
+  const description = args[1] || '';
+  
+  // Проверяем, есть ли вложения
+  if (message.attachments.size === 0) {
+    return message.reply('❌ **Ошибка!** Прикрепите фото к сообщению.');
+  }
+  
+  const attachment = message.attachments.first();
+  
+  // Проверяем, что это изображение
+  if (!attachment.contentType?.startsWith('image/')) {
+    return message.reply('❌ **Ошибка!** Прикреплённый файл не является изображением.');
+  }
+  
+  // Извлекаем ID канала из упоминания (<#123456789>)
+  const channelIdMatch = channelMention.match(/<#(\d+)>/);
+  if (!channelIdMatch) {
+    return message.reply('❌ **Ошибка!** Укажите канал в формате #канал.\nПример: `!compress #общий Мой скриншот`');
+  }
+  
+  const channelId = channelIdMatch[1];
+  
+  try {
+    // Находим канал
+    const guild = client.guilds.cache.get(getConfig().guildId);
+    if (!guild) {
+      return message.reply('❌ **Ошибка!** Не удалось найти сервер.');
+    }
+    
+    const channel = await guild.channels.fetch(channelId);
+    if (!channel || !channel.isTextBased()) {
+      return message.reply('❌ **Ошибка!** Канал не найден или не является текстовым.');
+    }
+    
+    // Проверяем права на отправку в канал
+    if (!channel.permissionsFor(guild.members.me).has(PermissionFlagsBits.SendMessages)) {
+      return message.reply('❌ **Ошибка!** У бота нет прав на отправку сообщений в этот канал.');
+    }
+    
+    // Скачиваем изображение
+    const response = await fetch(attachment.url);
+    const imageBuffer = Buffer.from(await response.arrayBuffer());
+    
+    // Определяем расширение
+    let extension = 'jpg';
+    if (attachment.contentType.includes('png')) extension = 'png';
+    else if (attachment.contentType.includes('webp')) extension = 'webp';
+    else if (attachment.contentType.includes('gif')) extension = 'gif';
+    else if (attachment.name?.includes('.png')) extension = 'png';
+    else if (attachment.name?.includes('.webp')) extension = 'webp';
+    else if (attachment.name?.includes('.gif')) extension = 'gif';
+    
+    // Создаём Embed
+    const embed = new EmbedBuilder()
+      .setColor(0x2B2D31)
+      .setImage(`attachment://image.${extension}`);
+    
+    if (description) {
+      embed.setDescription(`**${description}**`);
+    }
+    
+    // Отправляем в указанный канал
+    await channel.send({
+      embeds: [embed],
+      files: [{ attachment: imageBuffer, name: `image.${extension}` }]
+    });
+    
+    // Отвечаем в ЛС
+    await message.reply(`✅ **Готово!** Изображение отправлено в канал ${channelMention}`);
+    
+  } catch (error) {
+    console.error('Ошибка в !compress:', error);
+    await message.reply('❌ **Ошибка!** Не удалось отправить изображение.');
+  }
 });
 
 client.on('interactionCreate', async interaction => {
   
   const cfg = getConfig();
-  
-  // ========== КОМАНДА /compress ==========
-  if (interaction.isCommand() && interaction.commandName === 'compress') {
-    
-    const modal = new ModalBuilder()
-      .setCustomId('compress_modal')
-      .setTitle('📷 Отправить изображение');
-    
-    const commentInput = new TextInputBuilder()
-      .setCustomId('comment')
-      .setLabel('Комментарий к фото')
-      .setPlaceholder('Ваш комментарий...')
-      .setStyle(TextInputStyle.Paragraph)
-      .setRequired(false)
-      .setMaxLength(500);
-    
-    const urlInput = new TextInputBuilder()
-      .setCustomId('image_url')
-      .setLabel('Ссылка на изображение')
-      .setPlaceholder('https://files.catbox.moe/abc.png')
-      .setStyle(TextInputStyle.Short)
-      .setRequired(true);
-    
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(commentInput),
-      new ActionRowBuilder().addComponents(urlInput)
-    );
-    
-    await interaction.showModal(modal);
-  }
-  
-  // ========== ОБРАБОТКА МОДАЛЬНОГО ОКНА /compress ==========
-  if (interaction.isModalSubmit() && interaction.customId === 'compress_modal') {
-    const url = interaction.fields.getTextInputValue('image_url').trim();
-    const comment = interaction.fields.getTextInputValue('comment') || null;
-    
-    await interaction.deferReply();
-    
-    try {
-      if (!url.startsWith('http://') && !url.startsWith('https://')) {
-        return interaction.editReply('❌ **Ошибка!** Пожалуйста, вставьте прямую ссылку на изображение.');
-      }
-      
-      const response = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      });
-      
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      
-      const imageBuffer = Buffer.from(await response.arrayBuffer());
-      
-      let extension = 'jpg';
-      const contentType = response.headers.get('content-type') || '';
-      if (contentType.includes('png')) extension = 'png';
-      else if (contentType.includes('webp')) extension = 'webp';
-      else if (contentType.includes('gif')) extension = 'gif';
-      else if (url.includes('.png')) extension = 'png';
-      else if (url.includes('.webp')) extension = 'webp';
-      else if (url.includes('.gif')) extension = 'gif';
-      
-      const embed = new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setImage(`attachment://image.${extension}`);
-      
-      if (comment) {
-        embed.setDescription(`**${comment}**`);
-      }
-      
-      // Удаляем defer и отправляем как обычное сообщение
-      await interaction.deleteReply();
-      await interaction.channel.send({
-        embeds: [embed],
-        files: [{ attachment: imageBuffer, name: `image.${extension}` }]
-      });
-      
-    } catch (error) {
-      console.error('Ошибка:', error.message);
-      
-      // Пробуем просто вставить ссылку
-      try {
-        const embed = new EmbedBuilder()
-          .setColor(0x2B2D31)
-          .setImage(url);
-        
-        if (comment) {
-          embed.setDescription(`**${comment}**`);
-        }
-        
-        await interaction.deleteReply();
-        await interaction.channel.send({ embeds: [embed] });
-      } catch {
-        await interaction.editReply('❌ Не удалось загрузить изображение. Проверьте ссылку.');
-      }
-    }
-  }
   
   // ========== КОМАНДА /ping ==========
   if (interaction.isCommand() && interaction.commandName === 'ping') {
