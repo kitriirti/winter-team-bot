@@ -1,6 +1,5 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionFlagsBits, Collection } = require('discord.js');
 const http = require('http');
-const sharp = require('sharp');
 
 let config = {};
 try {
@@ -210,7 +209,7 @@ client.once('ready', async () => {
     
     await client.application.commands.create({
       name: 'compress',
-      description: 'Сжать изображение по ссылке и отправить с комментарием'
+      description: 'Отправить изображение по ссылке с комментарием'
     });
     
     console.log('✅ Команды зарегистрированы!');
@@ -231,7 +230,7 @@ client.on('interactionCreate', async interaction => {
     
     const modal = new ModalBuilder()
       .setCustomId('compress_modal')
-      .setTitle('📷 Сжать изображение');
+      .setTitle('📷 Отправить изображение');
     
     const urlInput = new TextInputBuilder()
       .setCustomId('image_url')
@@ -271,68 +270,42 @@ client.on('interactionCreate', async interaction => {
       }
       
       const imageBuffer = Buffer.from(await response.arrayBuffer());
-      const originalSize = (imageBuffer.length / (1024 * 1024)).toFixed(2);
+      const imageSize = (imageBuffer.length / (1024 * 1024)).toFixed(2);
       
-      // Определяем тип изображения из URL или заголовков
-      const contentType = response.headers.get('content-type') || '';
-      let format = 'jpeg';
-      if (contentType.includes('png')) format = 'png';
-      if (contentType.includes('webp')) format = 'webp';
+      // Определяем расширение из URL
+      let extension = 'jpg';
+      if (url.toLowerCase().includes('.png')) extension = 'png';
+      if (url.toLowerCase().includes('.webp')) extension = 'webp';
+      if (url.toLowerCase().includes('.gif')) extension = 'gif';
       
       await interaction.editReply({
-        content: `⏳ Скачано (${originalSize} МБ). Сжимаю...`
+        content: `✅ Изображение загружено (${imageSize} МБ). Отправляю...`
       });
-      
-      // Сжимаем изображение
-      let quality = 90;
-      let compressedBuffer;
-      let compressedSize;
-      
-      do {
-        if (format === 'png') {
-          compressedBuffer = await sharp(imageBuffer)
-            .resize(1920, 1080, { fit: 'inside', withoutEnlargement: true })
-            .png({ quality: quality })
-            .toBuffer();
-        } else {
-          compressedBuffer = await sharp(imageBuffer)
-            .resize(1920, 1080, { fit: 'inside', withoutEnlargement: true })
-            .jpeg({ quality: quality })
-            .toBuffer();
-        }
-        
-        compressedSize = compressedBuffer.length / (1024 * 1024);
-        quality -= 10;
-      } while (compressedSize > 9 && quality > 30);
-      
-      if (compressedSize > 10) {
-        return interaction.editReply('❌ Не удалось сжать изображение до 10 МБ! Попробуйте уменьшить исходное изображение.');
-      }
       
       // Создаём Embed с серой рамкой для комментария
       const embed = new EmbedBuilder()
         .setColor(0x2B2D31) // Тёмно-серый цвет
-        .setImage('attachment://compressed.jpg')
-        .setFooter({ text: `Сжато с ${originalSize} МБ до ${compressedSize.toFixed(2)} МБ` })
+        .setImage(`attachment://image.${extension}`)
+        .setFooter({ text: `Размер: ${imageSize} МБ` })
         .setTimestamp();
       
       // Если есть комментарий - добавляем его в серой рамке (цитата)
       if (comment) {
-        embed.setDescription(`> ${comment}\n\n*Оригинал:* ${url}`);
+        embed.setDescription(`> ${comment}\n\n*Источник:* ${url}`);
       } else {
-        embed.setDescription(`*Оригинал:* ${url}`);
+        embed.setDescription(`*Источник:* ${url}`);
       }
       
-      // Отправляем сжатое изображение
+      // Отправляем изображение
       await interaction.editReply({
         content: null,
         embeds: [embed],
-        files: [{ attachment: compressedBuffer, name: 'compressed.jpg' }]
+        files: [{ attachment: imageBuffer, name: `image.${extension}` }]
       });
       
     } catch (error) {
-      console.error('Ошибка сжатия:', error);
-      await interaction.editReply('❌ Произошла ошибка при сжатии изображения!');
+      console.error('Ошибка загрузки:', error);
+      await interaction.editReply('❌ Произошла ошибка при загрузке изображения!');
     }
   }
   
