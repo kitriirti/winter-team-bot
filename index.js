@@ -115,7 +115,6 @@ async function sendLog(channelId, embed) {
   }
 }
 
-// Авто-удаление тикета через 7 дней
 function scheduleAutoDelete(channelId, ticketId) {
   const timeout = setTimeout(async () => {
     try {
@@ -138,6 +137,43 @@ function scheduleAutoDelete(channelId, ticketId) {
   }, 7 * 24 * 60 * 60 * 1000);
   
   autoDeleteTimeouts.set(ticketId, timeout);
+}
+
+// Создание сообщения с кнопками для стака
+async function createTicketMessage(channel, stackType) {
+  const isStack1 = stackType === 'stack1';
+  const stackName = isStack1 ? 'СТАК 1' : 'СТАК 2';
+  const hours = isStack1 ? '3500' : '2500';
+  
+  const embed = new EmbedBuilder()
+    .setTitle('📋 ПОДАТЬ ЗАЯВКУ В КЛАН WT')
+    .setDescription(
+      `**ТРЕБОВАНИЯ ДЛЯ ${stackName}:**\n\n` +
+      `● ${hours} часов на аккаунте и более\n` +
+      `● 15+ лет\n` +
+      `● Иметь хороший микрофон\n` +
+      `● Умение слушать коллы и адекватно реагировать на критику\n` +
+      `● Минимум 6 часов стабильного онлайна в день\n\n` +
+      `**Статус набора:** ${ticketStatus[stackType] ? '🟢 Открыт' : '🔴 Закрыт'}\n\n` +
+      `Нажмите кнопку ниже, чтобы заполнить анкету.`
+    )
+    .setColor(0x3498DB)
+    .setTimestamp();
+
+  const row = new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId(`create_ticket_${stackType}`)
+        .setLabel(`📝 Подать заявку в ${stackName}`)
+        .setStyle(ButtonStyle.Primary),
+      
+      new ButtonBuilder()
+        .setCustomId(`toggle_${stackType}`)
+        .setEmoji(ticketStatus[stackType] ? '🟢' : '🔴')
+        .setStyle(ButtonStyle.Secondary)
+    );
+
+  return await channel.send({ embeds: [embed], components: [row] });
 }
 
 client.once('ready', async () => {
@@ -172,11 +208,6 @@ client.once('ready', async () => {
       description: 'Проверить задержку бота'
     });
     
-    await client.application.commands.create({
-      name: 'ticket_panel',
-      description: 'Создать панель управления набором (только для админов)'
-    });
-    
     console.log('✅ Команды зарегистрированы!');
   } catch (error) {
     console.error('❌ Ошибка регистрации команд:', error);
@@ -189,101 +220,6 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
   
   const cfg = getConfig();
-  
-  // ========== КОМАНДА /ticket_panel ==========
-  if (interaction.isCommand() && interaction.commandName === 'ticket_panel') {
-    
-    if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
-      return interaction.reply({ 
-        content: '❌ У вас нет прав для использования этой команды!', 
-        ephemeral: true 
-      });
-    }
-    
-    const embed = new EmbedBuilder()
-      .setTitle('🔧 УПРАВЛЕНИЕ НАБОРОМ')
-      .setDescription(
-        `**Текущий статус:**\n` +
-        `🔥 СТАК 1: ${ticketStatus.stack1 ? '🟢 Открыт' : '🔴 Закрыт'}\n` +
-        `💧 СТАК 2: ${ticketStatus.stack2 ? '🟢 Открыт' : '🔴 Закрыт'}\n\n` +
-        `Нажмите на кнопку, чтобы изменить статус:`
-      )
-      .setColor(0x3498DB)
-      .setTimestamp();
-    
-    const row = new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId('toggle_stack1')
-          .setLabel('🔥 СТАК 1')
-          .setEmoji(ticketStatus.stack1 ? '🟢' : '🔴')
-          .setStyle(ticketStatus.stack1 ? ButtonStyle.Success : ButtonStyle.Danger),
-        
-        new ButtonBuilder()
-          .setCustomId('toggle_stack2')
-          .setLabel('💧 СТАК 2')
-          .setEmoji(ticketStatus.stack2 ? '🟢' : '🔴')
-          .setStyle(ticketStatus.stack2 ? ButtonStyle.Success : ButtonStyle.Danger)
-      );
-    
-    await interaction.reply({ embeds: [embed], components: [row] });
-  }
-  
-  // ========== КНОПКИ УПРАВЛЕНИЯ НАБОРОМ ==========
-  if (interaction.isButton() && (interaction.customId === 'toggle_stack1' || interaction.customId === 'toggle_stack2')) {
-    
-    const hasStaffRole = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || 
-                         interaction.member.roles.cache.has(cfg.staffRoleId_stack2) ||
-                         interaction.memberPermissions.has(PermissionFlagsBits.Administrator);
-    
-    if (!hasStaffRole) {
-      return interaction.reply({ 
-        content: '❌ У вас нет прав для управления набором!', 
-        ephemeral: true 
-      });
-    }
-    
-    const stackType = interaction.customId === 'toggle_stack1' ? 'stack1' : 'stack2';
-    const stackName = stackType === 'stack1' ? 'СТАК 1' : 'СТАК 2';
-    
-    ticketStatus[stackType] = !ticketStatus[stackType];
-    saveTicketStatus();
-    
-    const newEmbed = EmbedBuilder.from(interaction.message.embeds[0])
-      .setDescription(
-        `**Текущий статус:**\n` +
-        `🔥 СТАК 1: ${ticketStatus.stack1 ? '🟢 Открыт' : '🔴 Закрыт'}\n` +
-        `💧 СТАК 2: ${ticketStatus.stack2 ? '🟢 Открыт' : '🔴 Закрыт'}\n\n` +
-        `Нажмите на кнопку, чтобы изменить статус:`
-      )
-      .setTimestamp();
-    
-    const newRow = new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId('toggle_stack1')
-          .setLabel('🔥 СТАК 1')
-          .setEmoji(ticketStatus.stack1 ? '🟢' : '🔴')
-          .setStyle(ticketStatus.stack1 ? ButtonStyle.Success : ButtonStyle.Danger),
-        
-        new ButtonBuilder()
-          .setCustomId('toggle_stack2')
-          .setLabel('💧 СТАК 2')
-          .setEmoji(ticketStatus.stack2 ? '🟢' : '🔴')
-          .setStyle(ticketStatus.stack2 ? ButtonStyle.Success : ButtonStyle.Danger)
-      );
-    
-    await interaction.update({ embeds: [newEmbed], components: [newRow] });
-    
-    const logEmbed = new EmbedBuilder()
-      .setTitle(ticketStatus[stackType] ? '🟢 НАБОР ОТКРЫТ' : '🔴 НАБОР ЗАКРЫТ')
-      .setDescription(`**${stackName}** — набор ${ticketStatus[stackType] ? 'открыт' : 'закрыт'}`)
-      .setColor(ticketStatus[stackType] ? 0x00FF00 : 0xFF0000)
-      .addFields({ name: '👮 Стафф', value: `<@${interaction.user.id}>`, inline: true })
-      .setTimestamp();
-    
-    await sendLog(cfg.logChannelId, logEmbed);
-  }
   
   // ========== КОМАНДА /ping ==========
   if (interaction.isCommand() && interaction.commandName === 'ping') {
@@ -450,28 +386,7 @@ client.on('interactionCreate', async interaction => {
       });
     }
 
-    const embed = new EmbedBuilder()
-      .setTitle('📋 ПОДАТЬ ЗАЯВКУ В КЛАН WT')
-      .setDescription(
-        '**ТРЕБОВАНИЯ ДЛЯ СТАК 1:**\n\n' +
-        '● 3500 часов на аккаунте и более\n' +
-        '● 15+ лет\n' +
-        '● Иметь хороший микрофон\n' +
-        '● Умение слушать коллы и адекватно реагировать на критику\n' +
-        '● Минимум 6 часов стабильного онлайна в день\n\n' +
-        'Нажмите кнопку ниже, чтобы заполнить анкету.'
-      )
-      .setColor(0x3498DB);
-
-    const row = new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId('create_ticket_stack1')
-          .setLabel('📝 Подать заявку в СТАК 1')
-          .setStyle(ButtonStyle.Primary)
-      );
-
-    await interaction.channel.send({ embeds: [embed], components: [row] });
+    await createTicketMessage(interaction.channel, 'stack1');
     await interaction.reply({ 
       content: '✅ Сообщение для СТАК 1 создано!', 
       ephemeral: true 
@@ -487,41 +402,83 @@ client.on('interactionCreate', async interaction => {
       });
     }
 
-    const embed = new EmbedBuilder()
-      .setTitle('📋 ПОДАТЬ ЗАЯВКУ В КЛАН WT')
-      .setDescription(
-        '**ТРЕБОВАНИЯ ДЛЯ СТАК 2:**\n\n' +
-        '● 2500 часов на аккаунте и более\n' +
-        '● 15+ лет\n' +
-        '● Иметь хороший микрофон\n' +
-        '● Умение слушать коллы и адекватно реагировать на критику\n' +
-        '● Минимум 6 часов стабильного онлайна в день\n\n' +
-        'Нажмите кнопку ниже, чтобы заполнить анкету.'
-      )
-      .setColor(0x3498DB);
-
-    const row = new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId('create_ticket_stack2')
-          .setLabel('📝 Подать заявку в СТАК 2')
-          .setStyle(ButtonStyle.Primary)
-      );
-
-    await interaction.channel.send({ embeds: [embed], components: [row] });
+    await createTicketMessage(interaction.channel, 'stack2');
     await interaction.reply({ 
       content: '✅ Сообщение для СТАК 2 создано!', 
       ephemeral: true 
     });
   }
 
-  // ========== ОБРАБОТКА КНОПОК (открытие анкеты) ==========
+  // ========== ОБРАБОТКА КНОПОК ==========
   if (interaction.isButton()) {
     
+    const customId = interaction.customId;
+    
+    // Кнопки переключения статуса набора (🟢/🔴)
+    if (customId === 'toggle_stack1' || customId === 'toggle_stack2') {
+      
+      const hasStaffRole = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || 
+                           interaction.member.roles.cache.has(cfg.staffRoleId_stack2) ||
+                           interaction.memberPermissions.has(PermissionFlagsBits.Administrator);
+      
+      if (!hasStaffRole) {
+        return interaction.reply({ 
+          content: '❌ У вас нет прав для управления набором!', 
+          ephemeral: true 
+        });
+      }
+      
+      const stackType = customId === 'toggle_stack1' ? 'stack1' : 'stack2';
+      const stackName = stackType === 'stack1' ? 'СТАК 1' : 'СТАК 2';
+      const hours = stackType === 'stack1' ? '3500' : '2500';
+      
+      ticketStatus[stackType] = !ticketStatus[stackType];
+      saveTicketStatus();
+      
+      const newEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+        .setDescription(
+          `**ТРЕБОВАНИЯ ДЛЯ ${stackName}:**\n\n` +
+          `● ${hours} часов на аккаунте и более\n` +
+          `● 15+ лет\n` +
+          `● Иметь хороший микрофон\n` +
+          `● Умение слушать коллы и адекватно реагировать на критику\n` +
+          `● Минимум 6 часов стабильного онлайна в день\n\n` +
+          `**Статус набора:** ${ticketStatus[stackType] ? '🟢 Открыт' : '🔴 Закрыт'}\n\n` +
+          `Нажмите кнопку ниже, чтобы заполнить анкету.`
+        )
+        .setTimestamp();
+      
+      const newRow = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId(`create_ticket_${stackType}`)
+            .setLabel(`📝 Подать заявку в ${stackName}`)
+            .setStyle(ButtonStyle.Primary),
+          
+          new ButtonBuilder()
+            .setCustomId(`toggle_${stackType}`)
+            .setEmoji(ticketStatus[stackType] ? '🟢' : '🔴')
+            .setStyle(ButtonStyle.Secondary)
+        );
+      
+      await interaction.update({ embeds: [newEmbed], components: [newRow] });
+      
+      const logEmbed = new EmbedBuilder()
+        .setTitle(ticketStatus[stackType] ? '🟢 НАБОР ОТКРЫТ' : '🔴 НАБОР ЗАКРЫТ')
+        .setDescription(`**${stackName}** — набор ${ticketStatus[stackType] ? 'открыт' : 'закрыт'}`)
+        .setColor(ticketStatus[stackType] ? 0x00FF00 : 0xFF0000)
+        .addFields({ name: '👮 Стафф', value: `<@${interaction.user.id}>`, inline: true })
+        .setTimestamp();
+      
+      await sendLog(cfg.logChannelId, logEmbed);
+      return;
+    }
+    
+    // Кнопки открытия анкеты
     let stackType = '';
-    if (interaction.customId === 'create_ticket_stack1') {
+    if (customId === 'create_ticket_stack1') {
       stackType = 'stack1';
-    } else if (interaction.customId === 'create_ticket_stack2') {
+    } else if (customId === 'create_ticket_stack2') {
       stackType = 'stack2';
     }
     
@@ -718,7 +675,6 @@ client.on('interactionCreate', async interaction => {
           createdAt: Date.now()
         });
 
-        // Авто-удаление через 7 дней
         scheduleAutoDelete(ticketChannel.id, ticketId);
 
         const workingHoursMsg = getWorkingHoursMessage();
@@ -767,7 +723,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ========== ОБРАБОТКА КНОПОК УПРАВЛЕНИЯ ==========
+  // ========== ОБРАБОТКА КНОПОК УПРАВЛЕНИЯ ТИКЕТОМ ==========
   if (interaction.isButton()) {
     
     const customId = interaction.customId;
@@ -846,7 +802,6 @@ client.on('interactionCreate', async interaction => {
       
       const ticketId = `${targetUserId}_${stackType}`;
       
-      // Отменяем авто-удаление при любом действии
       const autoDeleteTimeout = autoDeleteTimeouts.get(ticketId);
       if (autoDeleteTimeout) {
         clearTimeout(autoDeleteTimeout);
