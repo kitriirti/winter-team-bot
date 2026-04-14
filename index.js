@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionFlagsBits, Collection } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionFlagsBits, Collection, ContextMenuCommandBuilder, ApplicationCommandType } = require('discord.js');
 const http = require('http');
 
 let config = {};
@@ -182,6 +182,21 @@ client.once('ready', async () => {
   const cfg = getConfig();
   
   try {
+    // Удаляем старые команды
+    const globalCommands = await client.application.commands.fetch();
+    for (const command of globalCommands.values()) {
+      await command.delete();
+    }
+    
+    const guild = client.guilds.cache.get(cfg.guildId);
+    if (guild) {
+      const guildCommands = await guild.commands.fetch();
+      for (const command of guildCommands.values()) {
+        await command.delete();
+      }
+    }
+    
+    // Регистрируем слэш-команды
     await client.application.commands.create({
       name: 'ticket_stack1',
       description: 'Создать сообщение для подачи заявок в СТАК 1 (3500+ часов)'
@@ -209,7 +224,13 @@ client.once('ready', async () => {
     
     await client.application.commands.create({
       name: 'compress',
-      description: 'Отправить изображение с комментарием (ссылка или Ctrl+V)'
+      description: 'Отправить изображение по ссылке с комментарием'
+    });
+    
+    // Регистрируем контекстное меню для фото
+    await client.application.commands.create({
+      name: 'Отправить фото',
+      type: ApplicationCommandType.Message
     });
     
     console.log('✅ Команды зарегистрированы!');
@@ -225,121 +246,150 @@ client.on('interactionCreate', async interaction => {
   
   const cfg = getConfig();
   
-// ========== КОМАНДА /compress ==========
-if (interaction.isCommand() && interaction.commandName === 'compress') {
-  
-  const modal = new ModalBuilder()
-    .setCustomId('compress_modal')
-    .setTitle('📷 Отправить изображение');
-  
-  const commentInput = new TextInputBuilder()
-    .setCustomId('comment')
-    .setLabel('Комментарий к фото')
-    .setPlaceholder('Ваш комментарий...')
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(false)
-    .setMaxLength(500);
-  
-  const urlInput = new TextInputBuilder()
-    .setCustomId('image_url')
-    .setLabel('Ссылка на изображение')
-    .setPlaceholder('https://files.catbox.moe/abc.png')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-  
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(commentInput),
-    new ActionRowBuilder().addComponents(urlInput)
-  );
-  
-  await interaction.showModal(modal);
-}
-
-// ========== ОБРАБОТКА МОДАЛЬНОГО ОКНА /compress ==========
-if (interaction.isModalSubmit() && interaction.customId === 'compress_modal') {
-  const url = interaction.fields.getTextInputValue('image_url').trim();
-  const comment = interaction.fields.getTextInputValue('comment') || null;
-  
-  // ОТВЕЧАЕМ СРАЗУ, НО НЕ ПОКАЗЫВАЕМ КТО ВВЁЛ КОМАНДУ
-  await interaction.deferReply();
-  
-  try {
-    // Проверяем, что это ссылка
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      return interaction.editReply('❌ **Ошибка!** Пожалуйста, вставьте прямую ссылку на изображение (начинается с http:// или https://).');
+  // ========== КОНТЕКСТНОЕ МЕНЮ "Отправить фото" ==========
+  if (interaction.isMessageContextMenuCommand() && interaction.commandName === 'Отправить фото') {
+    const message = interaction.targetMessage;
+    
+    // Проверяем, есть ли в сообщении вложения
+    if (message.attachments.size === 0) {
+      return interaction.reply({ content: '❌ В сообщении нет изображений!', ephemeral: true });
     }
     
-    // Скачиваем изображение
-    const response = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-    });
+    const attachment = message.attachments.first();
+    const url = attachment.url;
     
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+    // Проверяем, что это изображение
+    if (!attachment.contentType?.startsWith('image/')) {
+      return interaction.reply({ content: '❌ Файл не является изображением!', ephemeral: true });
     }
     
-    const imageBuffer = Buffer.from(await response.arrayBuffer());
+    await interaction.deferReply();
     
-    // Проверяем размер (Discord лимит 10 МБ)
-    if (imageBuffer.length > 10 * 1024 * 1024) {
-      const sizeMB = (imageBuffer.length / (1024 * 1024)).toFixed(2);
-      return interaction.editReply(`❌ **Ошибка!** Изображение слишком большое (${sizeMB} МБ). Discord не принимает файлы больше 10 МБ.`);
-    }
-    
-    // Определяем расширение
-    let extension = 'jpg';
-    const contentType = response.headers.get('content-type') || '';
-    
-    if (contentType.includes('png')) extension = 'png';
-    else if (contentType.includes('webp')) extension = 'webp';
-    else if (contentType.includes('gif')) extension = 'gif';
-    else if (url.toLowerCase().includes('.png')) extension = 'png';
-    else if (url.toLowerCase().includes('.webp')) extension = 'webp';
-    else if (url.toLowerCase().includes('.gif')) extension = 'gif';
-    
-    // Создаём Embed БЕЗ ДАТЫ И ИНФОРМАЦИИ О ПОЛЬЗОВАТЕЛЕ
-    const embed = new EmbedBuilder()
-      .setColor(0x2B2D31)
-      .setImage(`attachment://image.${extension}`);
-    
-    // Добавляем комментарий большими буквами
-    if (comment) {
-      embed.setDescription(`**${comment}**`);
-    }
-    
-    // ОТПРАВЛЯЕМ КАК ОБЫЧНОЕ СООБЩЕНИЕ (не reply), чтобы скрыть автора
-    await interaction.deleteReply(); // Удаляем "defer" сообщение
-    
-    // Отправляем в канал как обычное сообщение (без указания кто ввёл команду)
-    await interaction.channel.send({
-      embeds: [embed],
-      files: [{ 
-        attachment: imageBuffer, 
-        name: `image.${extension}` 
-      }]
-    });
-    
-  } catch (error) {
-    console.error('Ошибка загрузки:', error.message);
-    
-    // Если не удалось скачать, пробуем просто вставить ссылку
     try {
+      // Скачиваем изображение
+      const response = await fetch(url);
+      const imageBuffer = Buffer.from(await response.arrayBuffer());
+      
+      // Определяем расширение
+      let extension = 'jpg';
+      if (attachment.contentType.includes('png')) extension = 'png';
+      else if (attachment.contentType.includes('webp')) extension = 'webp';
+      else if (attachment.contentType.includes('gif')) extension = 'gif';
+      else if (attachment.name?.includes('.png')) extension = 'png';
+      else if (attachment.name?.includes('.webp')) extension = 'webp';
+      else if (attachment.name?.includes('.gif')) extension = 'gif';
+      
       const embed = new EmbedBuilder()
         .setColor(0x2B2D31)
-        .setImage(url);
+        .setImage(`attachment://image.${extension}`);
+      
+      await interaction.deleteReply();
+      await interaction.channel.send({
+        embeds: [embed],
+        files: [{ attachment: imageBuffer, name: `image.${extension}` }]
+      });
+      
+    } catch (error) {
+      console.error('Ошибка:', error);
+      await interaction.editReply('❌ Не удалось отправить изображение.');
+    }
+  }
+  
+  // ========== КОМАНДА /compress ==========
+  if (interaction.isCommand() && interaction.commandName === 'compress') {
+    
+    const modal = new ModalBuilder()
+      .setCustomId('compress_modal')
+      .setTitle('📷 Отправить изображение');
+    
+    const commentInput = new TextInputBuilder()
+      .setCustomId('comment')
+      .setLabel('Комментарий к фото')
+      .setPlaceholder('Ваш комментарий...')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(false)
+      .setMaxLength(500);
+    
+    const urlInput = new TextInputBuilder()
+      .setCustomId('image_url')
+      .setLabel('Ссылка на изображение')
+      .setPlaceholder('https://files.catbox.moe/abc.png')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+    
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(commentInput),
+      new ActionRowBuilder().addComponents(urlInput)
+    );
+    
+    await interaction.showModal(modal);
+  }
+  
+  // ========== ОБРАБОТКА МОДАЛЬНОГО ОКНА /compress ==========
+  if (interaction.isModalSubmit() && interaction.customId === 'compress_modal') {
+    const url = interaction.fields.getTextInputValue('image_url').trim();
+    const comment = interaction.fields.getTextInputValue('comment') || null;
+    
+    await interaction.deferReply();
+    
+    try {
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        return interaction.editReply('❌ **Ошибка!** Пожалуйста, вставьте прямую ссылку на изображение.');
+      }
+      
+      const response = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      });
+      
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      
+      const imageBuffer = Buffer.from(await response.arrayBuffer());
+      
+      // Определяем расширение
+      let extension = 'jpg';
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('png')) extension = 'png';
+      else if (contentType.includes('webp')) extension = 'webp';
+      else if (contentType.includes('gif')) extension = 'gif';
+      else if (url.includes('.png')) extension = 'png';
+      else if (url.includes('.webp')) extension = 'webp';
+      else if (url.includes('.gif')) extension = 'gif';
+      
+      const embed = new EmbedBuilder()
+        .setColor(0x2B2D31)
+        .setImage(`attachment://image.${extension}`);
       
       if (comment) {
         embed.setDescription(`**${comment}**`);
       }
       
       await interaction.deleteReply();
-      await interaction.channel.send({ embeds: [embed] });
+      await interaction.channel.send({
+        embeds: [embed],
+        files: [{ attachment: imageBuffer, name: `image.${extension}` }]
+      });
       
-    } catch (embedError) {
-      await interaction.editReply('❌ Не удалось загрузить изображение. Проверьте ссылку.');
+    } catch (error) {
+      console.error('Ошибка:', error.message);
+      
+      // Пробуем просто вставить ссылку
+      try {
+        const embed = new EmbedBuilder()
+          .setColor(0x2B2D31)
+          .setImage(url);
+        
+        if (comment) {
+          embed.setDescription(`**${comment}**`);
+        }
+        
+        await interaction.deleteReply();
+        await interaction.channel.send({ embeds: [embed] });
+      } catch {
+        await interaction.editReply('❌ Не удалось загрузить изображение. Проверьте ссылку.');
+      }
     }
   }
-}
+  
   // ========== КОМАНДА /ping ==========
   if (interaction.isCommand() && interaction.commandName === 'ping') {
     const sent = await interaction.reply({ content: '🏓 Пинг...', fetchReply: true, ephemeral: true });
@@ -533,7 +583,6 @@ if (interaction.isModalSubmit() && interaction.customId === 'compress_modal') {
     
     const customId = interaction.customId;
     
-    // Кнопки переключения статуса набора (🟢/🔴)
     if (customId === 'toggle_stack1' || customId === 'toggle_stack2') {
       
       const hasStaffRole = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || 
@@ -593,7 +642,6 @@ if (interaction.isModalSubmit() && interaction.customId === 'compress_modal') {
       return;
     }
     
-    // Кнопки открытия анкеты
     let stackType = '';
     if (customId === 'create_ticket_stack1') {
       stackType = 'stack1';
@@ -705,7 +753,6 @@ if (interaction.isModalSubmit() && interaction.customId === 'compress_modal') {
         ? cfg.staffRoleId_stack1 
         : cfg.staffRoleId_stack2;
       
-      // Проверка возраста
       const ageNumber = parseInt(ageText.replace(/\s+/g, ''));
       
       if (isNaN(ageNumber) || ageNumber <= 0) {
@@ -715,7 +762,6 @@ if (interaction.isModalSubmit() && interaction.customId === 'compress_modal') {
         });
       }
       
-      // Проверка Steam ссылки
       if (!steam.toLowerCase().includes('steamcommunity.com')) {
         return interaction.reply({
           content: '❌ **Ошибка!** Пожалуйста, укажите корректную ссылку на Steam профиль.',
@@ -723,7 +769,6 @@ if (interaction.isModalSubmit() && interaction.customId === 'compress_modal') {
         });
       }
       
-      // Проверка часов
       const hoursNumber = parseInt(hoursText.replace(/\s+/g, ''));
       
       if (isNaN(hoursNumber) || hoursNumber <= 0) {
