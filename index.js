@@ -20,6 +20,22 @@ const client = new Client({
 
 const activeTickets = new Collection();
 
+// Статус приёма заявок (по умолчанию ВКЛЮЧЕН)
+let ticketStatus = {
+  stack1: true,
+  stack2: true
+};
+
+// Загружаем статус из переменной окружения
+try {
+  if (process.env.TICKET_STATUS) {
+    ticketStatus = JSON.parse(process.env.TICKET_STATUS);
+    console.log('✅ Статус приёма загружен');
+  }
+} catch (error) {
+  console.error('❌ Ошибка загрузки статуса:', error);
+}
+
 let stats = {
   stack1: { accepted: 0, denied: 0, autoDenied: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() },
   stack2: { accepted: 0, denied: 0, autoDenied: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() }
@@ -53,6 +69,15 @@ function saveStats() {
     console.log(`📊 СТАТИСТИКА (скопируй для Render): STATS_DATA='${statsJson}'`);
   } catch (error) {
     console.error('❌ Ошибка сохранения статистики:', error);
+  }
+}
+
+function saveTicketStatus() {
+  try {
+    const statusJson = JSON.stringify(ticketStatus);
+    console.log(`🔧 СТАТУС ПРИЁМА (скопируй для Render): TICKET_STATUS='${statusJson}'`);
+  } catch (error) {
+    console.error('❌ Ошибка сохранения статуса:', error);
   }
 }
 
@@ -123,17 +148,74 @@ client.once('ready', async () => {
       description: 'Проверить задержку бота'
     });
     
+    await client.application.commands.create({
+      name: 'ticket-off',
+      description: 'Закрыть приём заявок (только для администраторов)'
+    });
+    
+    await client.application.commands.create({
+      name: 'ticket-on',
+      description: 'Открыть приём заявок (только для администраторов)'
+    });
+    
     console.log('✅ Команды зарегистрированы!');
   } catch (error) {
     console.error('❌ Ошибка регистрации команд:', error);
   }
   
   console.log('✅ Бот готов к работе!');
+  console.log(`🔧 Статус приёма: СТАК 1 = ${ticketStatus.stack1 ? '🟢 Открыт' : '🔴 Закрыт'}, СТАК 2 = ${ticketStatus.stack2 ? '🟢 Открыт' : '🔴 Закрыт'}`);
 });
 
 client.on('interactionCreate', async interaction => {
   
   const cfg = getConfig();
+  
+  // ========== КОМАНДА /ticket-off ==========
+  if (interaction.isCommand() && interaction.commandName === 'ticket-off') {
+    
+    if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ 
+        content: '❌ У вас нет прав для использования этой команды!', 
+        ephemeral: true 
+      });
+    }
+    
+    ticketStatus.stack1 = false;
+    ticketStatus.stack2 = false;
+    saveTicketStatus();
+    
+    const embed = new EmbedBuilder()
+      .setTitle('🔴 ПРИЁМ ЗАЯВОК ЗАКРЫТ')
+      .setDescription('Набор в клан временно приостановлен.')
+      .setColor(0xFF0000)
+      .setTimestamp();
+    
+    await interaction.reply({ embeds: [embed] });
+  }
+  
+  // ========== КОМАНДА /ticket-on ==========
+  if (interaction.isCommand() && interaction.commandName === 'ticket-on') {
+    
+    if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ 
+        content: '❌ У вас нет прав для использования этой команды!', 
+        ephemeral: true 
+      });
+    }
+    
+    ticketStatus.stack1 = true;
+    ticketStatus.stack2 = true;
+    saveTicketStatus();
+    
+    const embed = new EmbedBuilder()
+      .setTitle('🟢 ПРИЁМ ЗАЯВОК ОТКРЫТ')
+      .setDescription('Набор в клан возобновлён!')
+      .setColor(0x00FF00)
+      .setTimestamp();
+    
+    await interaction.reply({ embeds: [embed] });
+  }
   
   // ========== КОМАНДА /ping ==========
   if (interaction.isCommand() && interaction.commandName === 'ping') {
@@ -278,6 +360,11 @@ client.on('interactionCreate', async interaction => {
           name: '📈 Всего за всё время',
           value: `🔥 СТАК 1: принято **${stats.stack1.accepted}**, отклонено **${stats.stack1.denied}**, автоотклонено **${stats.stack1.autoDenied || 0}**\n💧 СТАК 2: принято **${stats.stack2.accepted}**, отклонено **${stats.stack2.denied}**, автоотклонено **${stats.stack2.autoDenied || 0}**\n\n🤖 Всего автоотклонено: **${totalAutoDenied}**`,
           inline: false
+        },
+        {
+          name: '🔧 Статус приёма',
+          value: `🔥 СТАК 1: ${ticketStatus.stack1 ? '🟢 Открыт' : '🔴 Закрыт'}\n💧 СТАК 2: ${ticketStatus.stack2 ? '🟢 Открыт' : '🔴 Закрыт'}`,
+          inline: false
         }
       )
       .setTimestamp();
@@ -371,6 +458,14 @@ client.on('interactionCreate', async interaction => {
     }
     
     if (stackType) {
+      
+      // ПРОВЕРКА: ОТКРЫТ ЛИ ПРИЁМ ЗАЯВОК
+      if (!ticketStatus[stackType]) {
+        return interaction.reply({
+          content: '❌ **Набор в клан временно закрыт!** Попробуйте позже.',
+          ephemeral: true
+        });
+      }
       
       const userActiveTicket = activeTickets.get(`${interaction.user.id}_${stackType}`);
       
