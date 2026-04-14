@@ -1,5 +1,6 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionFlagsBits, Collection } = require('discord.js');
 const http = require('http');
+const sharp = require('sharp');
 
 let config = {};
 try {
@@ -139,7 +140,6 @@ function scheduleAutoDelete(channelId, ticketId) {
   autoDeleteTimeouts.set(ticketId, timeout);
 }
 
-// Создание сообщения с кнопками для стака
 async function createTicketMessage(channel, stackType) {
   const isStack1 = stackType === 'stack1';
   const stackName = isStack1 ? 'СТАК 1' : 'СТАК 2';
@@ -208,6 +208,11 @@ client.once('ready', async () => {
       description: 'Проверить задержку бота'
     });
     
+    await client.application.commands.create({
+      name: 'compress',
+      description: 'Сжать изображение по ссылке и отправить с комментарием'
+    });
+    
     console.log('✅ Команды зарегистрированы!');
   } catch (error) {
     console.error('❌ Ошибка регистрации команд:', error);
@@ -220,6 +225,116 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
   
   const cfg = getConfig();
+  
+  // ========== КОМАНДА /compress ==========
+  if (interaction.isCommand() && interaction.commandName === 'compress') {
+    
+    const modal = new ModalBuilder()
+      .setCustomId('compress_modal')
+      .setTitle('📷 Сжать изображение');
+    
+    const urlInput = new TextInputBuilder()
+      .setCustomId('image_url')
+      .setLabel('Ссылка на изображение')
+      .setPlaceholder('https://example.com/image.jpg')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+    
+    const commentInput = new TextInputBuilder()
+      .setCustomId('comment')
+      .setLabel('Комментарий к фото (необязательно)')
+      .setPlaceholder('Ваш комментарий...')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(false)
+      .setMaxLength(500);
+    
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(urlInput),
+      new ActionRowBuilder().addComponents(commentInput)
+    );
+    
+    await interaction.showModal(modal);
+  }
+  
+  // ========== ОБРАБОТКА МОДАЛЬНОГО ОКНА /compress ==========
+  if (interaction.isModalSubmit() && interaction.customId === 'compress_modal') {
+    const url = interaction.fields.getTextInputValue('image_url');
+    const comment = interaction.fields.getTextInputValue('comment') || null;
+    
+    await interaction.deferReply();
+    
+    try {
+      // Скачиваем изображение
+      const response = await fetch(url);
+      if (!response.ok) {
+        return interaction.editReply('❌ Не удалось скачать изображение! Проверьте ссылку.');
+      }
+      
+      const imageBuffer = Buffer.from(await response.arrayBuffer());
+      const originalSize = (imageBuffer.length / (1024 * 1024)).toFixed(2);
+      
+      // Определяем тип изображения из URL или заголовков
+      const contentType = response.headers.get('content-type') || '';
+      let format = 'jpeg';
+      if (contentType.includes('png')) format = 'png';
+      if (contentType.includes('webp')) format = 'webp';
+      
+      await interaction.editReply({
+        content: `⏳ Скачано (${originalSize} МБ). Сжимаю...`
+      });
+      
+      // Сжимаем изображение
+      let quality = 90;
+      let compressedBuffer;
+      let compressedSize;
+      
+      do {
+        if (format === 'png') {
+          compressedBuffer = await sharp(imageBuffer)
+            .resize(1920, 1080, { fit: 'inside', withoutEnlargement: true })
+            .png({ quality: quality })
+            .toBuffer();
+        } else {
+          compressedBuffer = await sharp(imageBuffer)
+            .resize(1920, 1080, { fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: quality })
+            .toBuffer();
+        }
+        
+        compressedSize = compressedBuffer.length / (1024 * 1024);
+        quality -= 10;
+      } while (compressedSize > 9 && quality > 30);
+      
+      if (compressedSize > 10) {
+        return interaction.editReply('❌ Не удалось сжать изображение до 10 МБ! Попробуйте уменьшить исходное изображение.');
+      }
+      
+      // Создаём Embed с серой рамкой для комментария
+      const embed = new EmbedBuilder()
+        .setColor(0x2B2D31) // Тёмно-серый цвет
+        .setImage('attachment://compressed.jpg')
+        .setFooter({ text: `Сжато с ${originalSize} МБ до ${compressedSize.toFixed(2)} МБ` })
+        .setTimestamp();
+      
+      // Если есть комментарий - добавляем его в серой рамке (цитата)
+      if (comment) {
+        embed.setDescription(`> ${comment}\n\n*Оригинал:* ${url}`);
+      } else {
+        embed.setDescription(`*Оригинал:* ${url}`);
+      }
+      
+      // Отправляем сжатое изображение
+      await interaction.editReply({
+        content: null,
+        embeds: [embed],
+        files: [{ attachment: compressedBuffer, name: 'compressed.jpg' }]
+      });
+      
+    } catch (error) {
+      console.error('Ошибка сжатия:', error);
+      await interaction.editReply('❌ Произошла ошибка при сжатии изображения!');
+    }
+  }
   
   // ========== КОМАНДА /ping ==========
   if (interaction.isCommand() && interaction.commandName === 'ping') {
