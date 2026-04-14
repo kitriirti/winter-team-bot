@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionFlagsBits, Collection, ContextMenuCommandBuilder, ApplicationCommandType } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionFlagsBits, Collection } = require('discord.js');
 const http = require('http');
 
 let config = {};
@@ -182,10 +182,11 @@ client.once('ready', async () => {
   const cfg = getConfig();
   
   try {
-    // Удаляем старые команды
+    // Удаляем ВСЕ старые команды
     const globalCommands = await client.application.commands.fetch();
     for (const command of globalCommands.values()) {
       await command.delete();
+      console.log(`🗑️ Удалена глобальная команда: ${command.name}`);
     }
     
     const guild = client.guilds.cache.get(cfg.guildId);
@@ -193,10 +194,11 @@ client.once('ready', async () => {
       const guildCommands = await guild.commands.fetch();
       for (const command of guildCommands.values()) {
         await command.delete();
+        console.log(`🗑️ Удалена команда сервера: ${command.name}`);
       }
     }
     
-    // Регистрируем слэш-команды
+    // Регистрируем только нужные команды
     await client.application.commands.create({
       name: 'ticket_stack1',
       description: 'Создать сообщение для подачи заявок в СТАК 1 (3500+ часов)'
@@ -224,13 +226,7 @@ client.once('ready', async () => {
     
     await client.application.commands.create({
       name: 'compress',
-      description: 'Отправить изображение по ссылке с комментарием'
-    });
-    
-    // Регистрируем контекстное меню для фото
-    await client.application.commands.create({
-      name: 'Отправить фото',
-      type: ApplicationCommandType.Message
+      description: 'Отправить изображение по ссылке'
     });
     
     console.log('✅ Команды зарегистрированы!');
@@ -245,55 +241,6 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
   
   const cfg = getConfig();
-  
-  // ========== КОНТЕКСТНОЕ МЕНЮ "Отправить фото" ==========
-  if (interaction.isMessageContextMenuCommand() && interaction.commandName === 'Отправить фото') {
-    const message = interaction.targetMessage;
-    
-    // Проверяем, есть ли в сообщении вложения
-    if (message.attachments.size === 0) {
-      return interaction.reply({ content: '❌ В сообщении нет изображений!', ephemeral: true });
-    }
-    
-    const attachment = message.attachments.first();
-    const url = attachment.url;
-    
-    // Проверяем, что это изображение
-    if (!attachment.contentType?.startsWith('image/')) {
-      return interaction.reply({ content: '❌ Файл не является изображением!', ephemeral: true });
-    }
-    
-    await interaction.deferReply();
-    
-    try {
-      // Скачиваем изображение
-      const response = await fetch(url);
-      const imageBuffer = Buffer.from(await response.arrayBuffer());
-      
-      // Определяем расширение
-      let extension = 'jpg';
-      if (attachment.contentType.includes('png')) extension = 'png';
-      else if (attachment.contentType.includes('webp')) extension = 'webp';
-      else if (attachment.contentType.includes('gif')) extension = 'gif';
-      else if (attachment.name?.includes('.png')) extension = 'png';
-      else if (attachment.name?.includes('.webp')) extension = 'webp';
-      else if (attachment.name?.includes('.gif')) extension = 'gif';
-      
-      const embed = new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setImage(`attachment://image.${extension}`);
-      
-      await interaction.deleteReply();
-      await interaction.channel.send({
-        embeds: [embed],
-        files: [{ attachment: imageBuffer, name: `image.${extension}` }]
-      });
-      
-    } catch (error) {
-      console.error('Ошибка:', error);
-      await interaction.editReply('❌ Не удалось отправить изображение.');
-    }
-  }
   
   // ========== КОМАНДА /compress ==========
   if (interaction.isCommand() && interaction.commandName === 'compress') {
@@ -345,7 +292,6 @@ client.on('interactionCreate', async interaction => {
       
       const imageBuffer = Buffer.from(await response.arrayBuffer());
       
-      // Определяем расширение
       let extension = 'jpg';
       const contentType = response.headers.get('content-type') || '';
       if (contentType.includes('png')) extension = 'png';
@@ -363,6 +309,7 @@ client.on('interactionCreate', async interaction => {
         embed.setDescription(`**${comment}**`);
       }
       
+      // Удаляем defer и отправляем как обычное сообщение
       await interaction.deleteReply();
       await interaction.channel.send({
         embeds: [embed],
