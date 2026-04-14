@@ -175,7 +175,7 @@ client.once('ready', async () => {
   }
 });
 
-// ========== КОМАНДА !compress В КАНАЛЕ (ПЕРЕСЫЛКА БЕЗ СКАЧИВАНИЯ) ==========
+// ========== КОМАНДА !compress В КАНАЛЕ (ЧИСТОЕ ФОТО БЕЗ ОБВОДКИ) ==========
 client.on('messageCreate', async message => {
   if (message.author.bot) return;
   if (message.channel.type === ChannelType.DM) return;
@@ -195,26 +195,30 @@ client.on('messageCreate', async message => {
     return message.reply('❌ Прикрепите фото!').then(m => setTimeout(() => m.delete(), 3000));
   }
   
-  const attachment = message.attachments.first();
-  if (!attachment.contentType?.startsWith('image/')) {
-    return message.reply('❌ Файл не изображение!').then(m => setTimeout(() => m.delete(), 3000));
-  }
-  
   try {
+    // Собираем все вложения
+    const files = [];
+    for (const attachment of message.attachments.values()) {
+      files.push({
+        attachment: attachment.url,
+        name: attachment.name
+      });
+    }
+    
     // Удаляем сообщение пользователя
     await message.delete().catch(() => {});
     
-    // Создаём Embed с изображением (используем прямую ссылку Discord)
-    const embed = new EmbedBuilder()
-      .setColor(0x2B2D31)
-      .setImage(attachment.url);
-    
+    // Отправляем просто файлы с подписью (без Embed)
     if (description) {
-      embed.setDescription(`**${description}**`);
+      await message.channel.send({
+        content: `**${description}**`,
+        files: files
+      });
+    } else {
+      await message.channel.send({
+        files: files
+      });
     }
-    
-    // Отправляем Embed
-    await message.channel.send({ embeds: [embed] });
     
   } catch (error) {
     console.error('❌ !compress error:', error);
