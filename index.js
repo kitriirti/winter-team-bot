@@ -85,7 +85,6 @@ async function cleanExpiredWarns(guild) {
   const warnRoles = guild.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
 
   for (const role of warnRoles.values()) {
-    // Для ролей с датой и сроком: "⚠️ Warn (15.04.2026) [7д]"
     const nameMatch = role.name.match(/⚠️ Warn \((\d{2}\.\d{2}\.\d{4})\) \[(\d+)д\]/);
     if (!nameMatch) continue;
     
@@ -98,7 +97,7 @@ async function cleanExpiredWarns(guild) {
     expireDate.setDate(expireDate.getDate() + durationDays);
     
     if (now >= expireDate) {
-      console.log(`🗑️ Удаляем просроченный варн: ${role.name}`);
+      console.log(`🗑️ [${guild.name}] Удаляем просроченный варн: ${role.name}`);
       
       for (const member of role.members.values()) {
         await member.roles.remove(role).catch(() => {});
@@ -124,16 +123,54 @@ async function removeAllWarns(member) {
   return warnRoles.size;
 }
 
-const getConfig = () => {
-  return {
+// ========== ПОЛУЧЕНИЕ НАСТРОЕК ДЛЯ СЕРВЕРА ==========
+const getConfig = (guildId = null) => {
+  // Базовые настройки
+  const baseConfig = {
     token: process.env.DISCORD_TOKEN || config.token,
     clientId: process.env.CLIENT_ID || config.clientId,
-    guildId: process.env.GUILD_ID || config.guildId,
-    ticketCategory: process.env.TICKET_CATEGORY || config.ticketCategory,
-    staffRoleId_stack1: process.env.STAFF_ROLE_STACK1 || config.staffRoleId_stack1,
-    staffRoleId_stack2: process.env.STAFF_ROLE_STACK2 || config.staffRoleId_stack2,
-    logChannelId: process.env.LOG_CHANNEL_ID || config.logChannelId,
-    memberRoleId: process.env.MEMBER_ROLE_ID || config.memberRoleId
+  };
+  
+  // Если указан guildId, возвращаем настройки для конкретного сервера
+  if (guildId) {
+    const guild1Id = process.env.GUILD_ID_1 || config.guildId_1;
+    const guild2Id = process.env.GUILD_ID_2 || config.guildId_2;
+    
+    if (guildId === guild1Id) {
+      return {
+        ...baseConfig,
+        guildId: guild1Id,
+        ticketCategory: process.env.TICKET_CATEGORY_1 || config.ticketCategory_1,
+        appealCategory: process.env.APPEAL_CATEGORY_1 || config.appealCategory_1 || process.env.TICKET_CATEGORY_1,
+        staffRoleId_stack1: process.env.STAFF_ROLE_STACK1_1 || config.staffRoleId_stack1_1,
+        staffRoleId_stack2: process.env.STAFF_ROLE_STACK2_1 || config.staffRoleId_stack2_1,
+        logChannelId: process.env.LOG_CHANNEL_ID_1 || config.logChannelId_1,
+        memberRoleId: process.env.MEMBER_ROLE_ID_1 || config.memberRoleId_1
+      };
+    } else if (guildId === guild2Id) {
+      return {
+        ...baseConfig,
+        guildId: guild2Id,
+        ticketCategory: process.env.TICKET_CATEGORY_2 || config.ticketCategory_2,
+        appealCategory: process.env.APPEAL_CATEGORY_2 || config.appealCategory_2 || process.env.TICKET_CATEGORY_2,
+        staffRoleId_stack1: process.env.STAFF_ROLE_STACK1_2 || config.staffRoleId_stack1_2,
+        staffRoleId_stack2: process.env.STAFF_ROLE_STACK2_2 || config.staffRoleId_stack2_2,
+        logChannelId: process.env.LOG_CHANNEL_ID_2 || config.logChannelId_2,
+        memberRoleId: process.env.MEMBER_ROLE_ID_2 || config.memberRoleId_2
+      };
+    }
+  }
+  
+  // По умолчанию возвращаем настройки первого сервера
+  return {
+    ...baseConfig,
+    guildId: process.env.GUILD_ID_1 || config.guildId_1 || process.env.GUILD_ID || config.guildId,
+    ticketCategory: process.env.TICKET_CATEGORY_1 || config.ticketCategory_1 || process.env.TICKET_CATEGORY || config.ticketCategory,
+    appealCategory: process.env.APPEAL_CATEGORY_1 || config.appealCategory_1 || process.env.TICKET_CATEGORY_1 || process.env.TICKET_CATEGORY,
+    staffRoleId_stack1: process.env.STAFF_ROLE_STACK1_1 || config.staffRoleId_stack1_1 || process.env.STAFF_ROLE_STACK1 || config.staffRoleId_stack1,
+    staffRoleId_stack2: process.env.STAFF_ROLE_STACK2_1 || config.staffRoleId_stack2_1 || process.env.STAFF_ROLE_STACK2 || config.staffRoleId_stack2,
+    logChannelId: process.env.LOG_CHANNEL_ID_1 || config.logChannelId_1 || process.env.LOG_CHANNEL_ID || config.logChannelId,
+    memberRoleId: process.env.MEMBER_ROLE_ID_1 || config.memberRoleId_1 || process.env.MEMBER_ROLE_ID || config.memberRoleId
   };
 };
 
@@ -144,12 +181,19 @@ function getWorkingHoursMessage() {
   return `\n**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n⏰ *Заявки рассматриваются с 10:00 до 21:00 по МСК.*`;
 }
 
-async function sendLog(channelId, embed) {
+async function sendLog(guildId, embed) {
   try {
-    if (!channelId) return;
-    const channel = await client.channels.fetch(channelId).catch(() => null);
+    const cfg = getConfig(guildId);
+    if (!cfg.logChannelId) return;
+    
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) return;
+    
+    const channel = await guild.channels.fetch(cfg.logChannelId).catch(() => null);
     if (!channel) return;
+    
     await channel.send({ embeds: [embed] });
+    console.log(`📝 [${guild.name}] Лог отправлен`);
   } catch (error) {
     console.error('❌ Ошибка отправки лога:', error.message);
   }
@@ -173,6 +217,7 @@ function scheduleAutoDelete(channelId, ticketId) {
 }
 
 async function createTicketMessage(channel, stackType) {
+  const cfg = getConfig(channel.guild.id);
   const isStack1 = stackType === 'stack1';
   const stackName = isStack1 ? 'СТАК 1' : 'СТАК 2';
   const hours = isStack1 ? '3500' : '2500';
@@ -198,6 +243,7 @@ async function createTicketMessage(channel, stackType) {
 
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} запущен!`);
+  console.log(`📊 Серверов: ${client.guilds.cache.size}`);
   
   // Анимация статуса
   const fullText = 'winter team';
@@ -216,9 +262,7 @@ client.once('ready', async () => {
     client.user.setActivity(displayText, { type: 2 });
   }, 5000);
   
-  const cfg = getConfig();
-  
-  // Очистка варнов при запуске
+  // Очистка варнов при запуске на всех серверах
   for (const guild of client.guilds.cache.values()) {
     await cleanExpiredWarns(guild);
   }
@@ -231,28 +275,26 @@ client.once('ready', async () => {
   }, 10 * 60 * 1000);
   
   try {
-    const globalCommands = await client.application.commands.fetch();
-    for (const cmd of globalCommands.values()) await cmd.delete();
-    const guild = client.guilds.cache.get(cfg.guildId);
-    if (guild) for (const cmd of (await guild.commands.fetch()).values()) await cmd.delete();
+    // Регистрируем команды глобально
+    await client.application.commands.set([
+      { name: 'ticket_stack1', description: 'Создать сообщение для подачи заявок в СТАК 1 (3500+ часов)' },
+      { name: 'ticket_stack2', description: 'Создать сообщение для подачи заявок в СТАК 2 (2500+ часов)' },
+      { name: 'stats', description: 'Показать статистику заявок за неделю (только для стаффа)' },
+      { name: 'battlemetrics', description: 'Показать BattleMetrics профиль игрока из заявки (только для стаффа)' },
+      { name: 'ping', description: 'Проверить задержку бота' },
+      { name: 'warn', description: 'Выдать предупреждение пользователю' },
+      { name: 'unwarn', description: 'Снять все предупреждения с пользователя' },
+      { name: 'appeal_panel', description: 'Создать панель обжалования/отработки варнов' }
+    ]);
     
-    await client.application.commands.create({ name: 'ticket_stack1', description: 'Создать сообщение для подачи заявок в СТАК 1 (3500+ часов)' });
-    await client.application.commands.create({ name: 'ticket_stack2', description: 'Создать сообщение для подачи заявок в СТАК 2 (2500+ часов)' });
-    await client.application.commands.create({ name: 'stats', description: 'Показать статистику заявок за неделю (только для стаффа)' });
-    await client.application.commands.create({ name: 'battlemetrics', description: 'Показать BattleMetrics профиль игрока из заявки (только для стаффа)' });
-    await client.application.commands.create({ name: 'ping', description: 'Проверить задержку бота' });
-    await client.application.commands.create({ name: 'warn', description: 'Выдать предупреждение пользователю' });
-    await client.application.commands.create({ name: 'unwarn', description: 'Снять все предупреждения с пользователя' });
-    await client.application.commands.create({ name: 'appeal_panel', description: 'Создать панель обжалования/отработки варнов' });
-    
-    console.log('✅ Команды зарегистрированы!');
+    console.log('✅ Команды зарегистрированы глобально!');
   } catch (error) {
     console.error('❌ Ошибка регистрации:', error);
   }
 });
 
 client.on('interactionCreate', async interaction => {
-  const cfg = getConfig();
+  const cfg = getConfig(interaction.guild?.id);
   
   // ========== КОМАНДА /appeal_panel ==========
   if (interaction.isCommand() && interaction.commandName === 'appeal_panel') {
@@ -294,7 +336,6 @@ client.on('interactionCreate', async interaction => {
     const type = interaction.customId === 'appeal_ticket' ? 'обжалование' : 'отработка';
     const emoji = interaction.customId === 'appeal_ticket' ? '📝' : '✅';
     
-    // Проверяем, есть ли у пользователя варны
     const warnRoles = interaction.member.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
     
     if (warnRoles.size === 0) {
@@ -332,15 +373,14 @@ client.on('interactionCreate', async interaction => {
     try {
       const user = interaction.user;
       const warnRoles = user.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
-      
-      // Список варнов пользователя
       const warnsList = warnRoles.map(r => `- ${r.name}`).join('\n');
       
-      // Создаём канал для обжалования/отработки
+      const categoryId = cfg.appealCategory || cfg.ticketCategory;
+      
       const appealChannel = await interaction.guild.channels.create({
         name: `${emoji}-${type}-${user.username}`,
         type: ChannelType.GuildText,
-        parent: cfg.ticketCategory,
+        parent: categoryId,
         permissionOverwrites: [
           { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
           { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
@@ -386,7 +426,7 @@ client.on('interactionCreate', async interaction => {
       
     } catch (error) {
       console.error('❌ Ошибка создания обращения:', error);
-      await interaction.editReply({ content: '❌ Произошла ошибка!', ephemeral: true });
+      await interaction.editReply({ content: '❌ Произошла ошибка! Проверьте настройки категории.', ephemeral: true });
     }
   }
   
@@ -418,7 +458,6 @@ client.on('interactionCreate', async interaction => {
         return interaction.editReply(`ℹ️ У ${member.user.tag} нет активных предупреждений.`);
       }
       
-      // Обновляем Embed
       const originalEmbed = interaction.message.embeds[0];
       const newEmbed = EmbedBuilder.from(originalEmbed)
         .setColor(0x00FF00)
@@ -430,7 +469,20 @@ client.on('interactionCreate', async interaction => {
       
       await interaction.channel.send(`✅ **Варны сняты!** Модератор: <@${interaction.user.id}>`);
       
-      // Уведомление пользователю
+      // ЛОГ: снятие варна
+      const logEmbed = new EmbedBuilder()
+        .setTitle('✅ Варны сняты')
+        .setColor(0x00FF00)
+        .addFields(
+          { name: '👤 Пользователь', value: `<@${member.id}> (${member.user.tag})`, inline: true },
+          { name: '👮 Модератор', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
+          { name: '📊 Количество', value: `${removedCount}`, inline: true },
+          { name: '📁 Канал', value: `${interaction.channel.name}`, inline: false }
+        )
+        .setTimestamp();
+      
+      await sendLog(interaction.guild.id, logEmbed);
+      
       try {
         await member.send({
           embeds: [new EmbedBuilder()
@@ -441,7 +493,6 @@ client.on('interactionCreate', async interaction => {
         });
       } catch (error) {}
       
-      // Закрываем канал через 5 секунд
       setTimeout(async () => {
         try {
           await interaction.channel.delete();
@@ -475,7 +526,7 @@ client.on('interactionCreate', async interaction => {
     }, 2000);
   }
   
-  // ========== КОМАНДА /unwarn (снятие всех варнов) ==========
+  // ========== КОМАНДА /unwarn ==========
   if (interaction.isCommand() && interaction.commandName === 'unwarn') {
     const hasStaffRole = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || 
                          interaction.member.roles.cache.has(cfg.staffRoleId_stack2) ||
@@ -530,6 +581,19 @@ client.on('interactionCreate', async interaction => {
         .setTimestamp();
       
       await interaction.editReply({ embeds: [embed] });
+      
+      // ЛОГ: снятие варна через команду
+      const logEmbed = new EmbedBuilder()
+        .setTitle('✅ Варны сняты (команда)')
+        .setColor(0x00FF00)
+        .addFields(
+          { name: '👤 Пользователь', value: `<@${member.id}> (${member.user.tag})`, inline: true },
+          { name: '👮 Модератор', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
+          { name: '📊 Количество', value: `${removedCount}`, inline: true }
+        )
+        .setTimestamp();
+      
+      await sendLog(interaction.guild.id, logEmbed);
       
       try {
         await member.send({
@@ -662,6 +726,24 @@ client.on('interactionCreate', async interaction => {
         .setTimestamp();
       
       await interaction.editReply({ embeds: [embed] });
+      
+      // ЛОГ: выдача варна
+      const logEmbed = new EmbedBuilder()
+        .setTitle('⚠️ Выдан варн')
+        .setColor(0xFFA500)
+        .addFields(
+          { name: '👤 Пользователь', value: `<@${member.id}> (${member.user.tag})`, inline: true },
+          { name: '👮 Модератор', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
+          { name: '⏰ Срок', value: durationText, inline: true },
+          { name: '📝 Причина', value: reason, inline: false }
+        )
+        .setTimestamp();
+      
+      if (workoff) {
+        logEmbed.addFields({ name: '🔄 Отработка', value: workoff, inline: false });
+      }
+      
+      await sendLog(interaction.guild.id, logEmbed);
       
       let dmDescription = `**Причина:** ${reason}\n**Модератор:** ${interaction.user.tag}\n**Срок:** ${durationText}`;
       if (workoff) dmDescription += `\n\n**Отработка:** ${workoff}`;
