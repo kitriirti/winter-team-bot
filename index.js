@@ -170,7 +170,7 @@ client.once('ready', async () => {
     }
     const displayText = currentText || 'w';
     client.user.setActivity(displayText, { type: 2 });
-  }, 5000);
+  }, 1000);
   
   try {
     await client.application.commands.set([
