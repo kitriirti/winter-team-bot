@@ -14,7 +14,8 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildVoiceStates
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.DirectMessages
   ],
   partials: ['CHANNEL', 'MESSAGE']
 });
@@ -78,16 +79,60 @@ function saveTicketStatus() {
   }
 }
 
+// ========== ОЧИСТКА ПРОСРОЧЕННЫХ ВАРНОВ ==========
+async function cleanExpiredWarns(guild) {
+  const now = new Date();
+  const warnRoles = guild.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
+
+  for (const role of warnRoles.values()) {
+    const nameMatch = role.name.match(/⚠️ Warn \((\d{2}\.\d{2}\.\d{4})\) \[(\d+)д\]/);
+    if (!nameMatch) continue;
+    
+    const dateStr = nameMatch[1];
+    const durationDays = parseInt(nameMatch[2]);
+    
+    const [day, month, year] = dateStr.split('.');
+    const issueDate = new Date(`${year}-${month}-${day}`);
+    const expireDate = new Date(issueDate);
+    expireDate.setDate(expireDate.getDate() + durationDays);
+    
+    if (now >= expireDate) {
+      console.log(`🗑️ Удаляем просроченный варн: ${role.name}`);
+      
+      for (const member of role.members.values()) {
+        await member.roles.remove(role).catch(() => {});
+      }
+      
+      await role.delete().catch(() => {});
+    }
+  }
+}
+
+// ========== СНЯТИЕ ВСЕХ ВАРНОВ С ПОЛЬЗОВАТЕЛЯ ==========
+async function removeAllWarns(member) {
+  const warnRoles = member.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
+  
+  for (const role of warnRoles.values()) {
+    await member.roles.remove(role).catch(() => {});
+    
+    if (role.members.size === 0) {
+      await role.delete().catch(() => {});
+    }
+  }
+  
+  return warnRoles.size;
+}
+
 const getConfig = () => {
   return {
-    token: process.env.DISCORD_TOKEN || config?.token,
-    clientId: process.env.CLIENT_ID || config?.clientId,
-    guildId: process.env.GUILD_ID || config?.guildId,
-    ticketCategory: process.env.TICKET_CATEGORY || config?.ticketCategory,
-    staffRoleId_stack1: process.env.STAFF_ROLE_STACK1 || config?.staffRoleId_stack1,
-    staffRoleId_stack2: process.env.STAFF_ROLE_STACK2 || config?.staffRoleId_stack2,
-    logChannelId: process.env.LOG_CHANNEL_ID || config?.logChannelId,
-    memberRoleId: process.env.MEMBER_ROLE_ID || config?.memberRoleId
+    token: process.env.DISCORD_TOKEN || config.token,
+    clientId: process.env.CLIENT_ID || config.clientId,
+    guildId: process.env.GUILD_ID || config.guildId,
+    ticketCategory: process.env.TICKET_CATEGORY || config.ticketCategory,
+    staffRoleId_stack1: process.env.STAFF_ROLE_STACK1 || config.staffRoleId_stack1,
+    staffRoleId_stack2: process.env.STAFF_ROLE_STACK2 || config.staffRoleId_stack2,
+    logChannelId: process.env.LOG_CHANNEL_ID || config.logChannelId,
+    memberRoleId: process.env.MEMBER_ROLE_ID || config.memberRoleId
   };
 };
 
@@ -127,7 +172,6 @@ function scheduleAutoDelete(channelId, ticketId) {
 }
 
 async function createTicketMessage(channel, stackType) {
-  const cfg = getConfig();
   const isStack1 = stackType === 'stack1';
   const stackName = isStack1 ? 'СТАК 1' : 'СТАК 2';
   const hours = isStack1 ? '3500' : '2500';
@@ -153,7 +197,6 @@ async function createTicketMessage(channel, stackType) {
 
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} запущен!`);
-  console.log(`📊 Серверов: ${client.guilds.cache.size}`);
   
   // Анимация статуса
   const fullText = 'winter team';
@@ -172,14 +215,33 @@ client.once('ready', async () => {
     client.user.setActivity(displayText, { type: 2 });
   }, 5000);
   
+  const cfg = getConfig();
+  
+  // Очистка варнов при запуске
+  for (const guild of client.guilds.cache.values()) {
+    await cleanExpiredWarns(guild);
+  }
+  
+  // Периодическая очистка варнов (каждые 10 минут)
+  setInterval(async () => {
+    for (const guild of client.guilds.cache.values()) {
+      await cleanExpiredWarns(guild);
+    }
+  }, 10 * 60 * 1000);
+  
   try {
-    await client.application.commands.set([
-      { name: 'ticket_stack1', description: 'Создать сообщение для подачи заявок в СТАК 1 (3500+ часов)' },
-      { name: 'ticket_stack2', description: 'Создать сообщение для подачи заявок в СТАК 2 (2500+ часов)' },
-      { name: 'stats', description: 'Показать статистику заявок за неделю (только для стаффа)' },
-      { name: 'battlemetrics', description: 'Показать BattleMetrics профиль игрока из заявки (только для стаффа)' },
-      { name: 'ping', description: 'Проверить задержку бота' }
-    ]);
+    const globalCommands = await client.application.commands.fetch();
+    for (const cmd of globalCommands.values()) await cmd.delete();
+    const guild = client.guilds.cache.get(cfg.guildId);
+    if (guild) for (const cmd of (await guild.commands.fetch()).values()) await cmd.delete();
+    
+    await client.application.commands.create({ name: 'ticket_stack1', description: 'Создать сообщение для подачи заявок в СТАК 1 (3500+ часов)' });
+    await client.application.commands.create({ name: 'ticket_stack2', description: 'Создать сообщение для подачи заявок в СТАК 2 (2500+ часов)' });
+    await client.application.commands.create({ name: 'stats', description: 'Показать статистику заявок за неделю (только для стаффа)' });
+    await client.application.commands.create({ name: 'battlemetrics', description: 'Показать BattleMetrics профиль игрока из заявки (только для стаффа)' });
+    await client.application.commands.create({ name: 'ping', description: 'Проверить задержку бота' });
+    await client.application.commands.create({ name: 'warn', description: 'Выдать предупреждение пользователю' });
+    await client.application.commands.create({ name: 'unwarn', description: 'Снять все предупреждения с пользователя' });
     
     console.log('✅ Команды зарегистрированы!');
   } catch (error) {
@@ -190,6 +252,214 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
   const cfg = getConfig();
   
+  // ========== КОМАНДА /unwarn (снятие всех варнов) ==========
+  if (interaction.isCommand() && interaction.commandName === 'unwarn') {
+    const hasStaffRole = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || 
+                         interaction.member.roles.cache.has(cfg.staffRoleId_stack2) ||
+                         interaction.member.permissions.has(PermissionFlagsBits.Administrator);
+    
+    if (!hasStaffRole) {
+      return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
+    }
+    
+    const modal = new ModalBuilder()
+      .setCustomId('unwarn_modal')
+      .setTitle('✅ Снять предупреждения');
+    
+    const userInput = new TextInputBuilder()
+      .setCustomId('user')
+      .setLabel('ID пользователя или @упоминание')
+      .setPlaceholder('Например: 1492902233354797329')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+    
+    modal.addComponents(new ActionRowBuilder().addComponents(userInput));
+    
+    await interaction.showModal(modal);
+  }
+  
+  // ========== ОБРАБОТКА МОДАЛЬНОГО ОКНА /unwarn ==========
+  if (interaction.isModalSubmit() && interaction.customId === 'unwarn_modal') {
+    const userInput = interaction.fields.getTextInputValue('user');
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      let userId = userInput;
+      const mentionMatch = userInput.match(/<@!?(\d+)>/);
+      if (mentionMatch) userId = mentionMatch[1];
+      
+      const member = await interaction.guild.members.fetch(userId).catch(() => null);
+      if (!member) {
+        return interaction.editReply('❌ Пользователь не найден!');
+      }
+      
+      const removedCount = await removeAllWarns(member);
+      
+      if (removedCount === 0) {
+        return interaction.editReply(`ℹ️ У ${member.user.tag} нет активных предупреждений.`);
+      }
+      
+      const embed = new EmbedBuilder()
+        .setTitle('✅ Предупреждения сняты')
+        .setColor(0x00FF00)
+        .setDescription(`**Пользователь:** <@${member.id}>\n**Модератор:** <@${interaction.user.id}>\n**Снято варнов:** ${removedCount}`)
+        .setTimestamp();
+      
+      await interaction.editReply({ embeds: [embed] });
+      
+      try {
+        await member.send({
+          embeds: [new EmbedBuilder()
+            .setTitle('✅ Предупреждения сняты')
+            .setColor(0x00FF00)
+            .setDescription(`**Модератор:** ${interaction.user.tag}\n**Снято варнов:** ${removedCount}`)
+          ]
+        });
+      } catch (error) {}
+      
+    } catch (error) {
+      console.error('❌ Ошибка снятия варнов:', error);
+      await interaction.editReply('❌ Произошла ошибка!');
+    }
+  }
+  
+  // ========== КОМАНДА /warn ==========
+  if (interaction.isCommand() && interaction.commandName === 'warn') {
+    const hasStaffRole = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || 
+                         interaction.member.roles.cache.has(cfg.staffRoleId_stack2) ||
+                         interaction.member.permissions.has(PermissionFlagsBits.Administrator);
+    
+    if (!hasStaffRole) {
+      return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
+    }
+    
+    const modal = new ModalBuilder()
+      .setCustomId('warn_modal')
+      .setTitle('⚠️ Выдать предупреждение');
+    
+    const userInput = new TextInputBuilder()
+      .setCustomId('user')
+      .setLabel('ID пользователя или @упоминание')
+      .setPlaceholder('Например: 1492902233354797329')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+    
+    const durationInput = new TextInputBuilder()
+      .setCustomId('duration')
+      .setLabel('Срок: 7, 14, 30 или forever')
+      .setPlaceholder('7, 14, 30, forever')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setMaxLength(10);
+    
+    const reasonInput = new TextInputBuilder()
+      .setCustomId('reason')
+      .setLabel('Причина')
+      .setPlaceholder('Нарушение правил...')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(true)
+      .setMaxLength(500);
+    
+    const workoffInput = new TextInputBuilder()
+      .setCustomId('workoff')
+      .setLabel('Отработка (необязательно)')
+      .setPlaceholder('Например: Принести 1000 серы')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(false)
+      .setMaxLength(200);
+    
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(userInput),
+      new ActionRowBuilder().addComponents(durationInput),
+      new ActionRowBuilder().addComponents(reasonInput),
+      new ActionRowBuilder().addComponents(workoffInput)
+    );
+    
+    await interaction.showModal(modal);
+  }
+  
+  // ========== ОБРАБОТКА МОДАЛЬНОГО ОКНА ВАРНА ==========
+  if (interaction.isModalSubmit() && interaction.customId === 'warn_modal') {
+    const userInput = interaction.fields.getTextInputValue('user');
+    const durationInput = interaction.fields.getTextInputValue('duration').toLowerCase();
+    const reason = interaction.fields.getTextInputValue('reason');
+    const workoff = interaction.fields.getTextInputValue('workoff') || null;
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    let durationDays = 0;
+    let isForever = false;
+    let durationText = '';
+    
+    if (durationInput === 'forever' || durationInput === 'навсегда') {
+      isForever = true;
+      durationText = 'навсегда';
+    } else {
+      durationDays = parseInt(durationInput);
+      if (isNaN(durationDays) || ![7, 14, 30].includes(durationDays)) {
+        return interaction.editReply('❌ Неверный срок! Укажите: 7, 14, 30 или forever');
+      }
+      durationText = `${durationDays}д`;
+    }
+    
+    try {
+      let userId = userInput;
+      const mentionMatch = userInput.match(/<@!?(\d+)>/);
+      if (mentionMatch) userId = mentionMatch[1];
+      
+      const member = await interaction.guild.members.fetch(userId).catch(() => null);
+      if (!member) {
+        return interaction.editReply('❌ Пользователь не найден!');
+      }
+      
+      const today = new Date();
+      const dateStr = `${today.getDate().toString().padStart(2, '0')}.${(today.getMonth()+1).toString().padStart(2, '0')}.${today.getFullYear()}`;
+      const roleName = isForever ? `⚠️ Warn (навсегда)` : `⚠️ Warn (${dateStr}) [${durationDays}д]`;
+      
+      let warnRole = interaction.guild.roles.cache.find(r => r.name === roleName);
+      if (!warnRole) {
+        warnRole = await interaction.guild.roles.create({
+          name: roleName,
+          color: 0xFFA500,
+          reason: `Варн для ${member.user.tag}`
+        });
+      }
+      
+      await member.roles.add(warnRole);
+      
+      let description = `**Пользователь:** <@${member.id}>\n**Модератор:** <@${interaction.user.id}>\n**Причина:** ${reason}\n**Срок:** ${durationText}`;
+      if (!isForever) description += `\n**Дата выдачи:** ${dateStr}`;
+      if (workoff) description += `\n**Отработка:** ${workoff}`;
+      
+      const embed = new EmbedBuilder()
+        .setTitle('⚠️ Предупреждение выдано')
+        .setColor(0xFFA500)
+        .setDescription(description)
+        .setTimestamp();
+      
+      await interaction.editReply({ embeds: [embed] });
+      
+      let dmDescription = `**Причина:** ${reason}\n**Модератор:** ${interaction.user.tag}\n**Срок:** ${durationText}`;
+      if (workoff) dmDescription += `\n\n**Отработка:** ${workoff}`;
+      if (!isForever) dmDescription += `\n\nРоль будет автоматически снята через ${durationDays} дней.`;
+      
+      try {
+        await member.send({
+          embeds: [new EmbedBuilder()
+            .setTitle('⚠️ Вы получили предупреждение')
+            .setColor(0xFFA500)
+            .setDescription(dmDescription)
+          ]
+        });
+      } catch (error) {}
+      
+    } catch (error) {
+      console.error('❌ Ошибка выдачи варна:', error);
+      await interaction.editReply('❌ Произошла ошибка!');
+    }
+  }
+  
   // ========== КОМАНДА /ping ==========
   if (interaction.isCommand() && interaction.commandName === 'ping') {
     const sent = await interaction.reply({ content: '🏓 Пинг...', fetchReply: true, ephemeral: true });
@@ -198,11 +468,10 @@ client.on('interactionCreate', async interaction => {
   
   // ========== КОМАНДА /battlemetrics ==========
   if (interaction.isCommand() && interaction.commandName === 'battlemetrics') {
-    const hasStaff = (cfg.staffRoleId_stack1 && interaction.member.roles.cache.has(cfg.staffRoleId_stack1)) || 
-                     (cfg.staffRoleId_stack2 && interaction.member.roles.cache.has(cfg.staffRoleId_stack2)) ||
-                     interaction.member.permissions.has(PermissionFlagsBits.Administrator);
-    
-    if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
+    const hasStaff = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || interaction.member.roles.cache.has(cfg.staffRoleId_stack2);
+    if (!hasStaff && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
+    }
     
     const channel = interaction.channel;
     if (!channel.name.startsWith('🔥｜') && !channel.name.startsWith('💧｜')) {
@@ -233,11 +502,10 @@ client.on('interactionCreate', async interaction => {
   
   // ========== КОМАНДА /stats ==========
   if (interaction.isCommand() && interaction.commandName === 'stats') {
-    const hasStaff = (cfg.staffRoleId_stack1 && interaction.member.roles.cache.has(cfg.staffRoleId_stack1)) || 
-                     (cfg.staffRoleId_stack2 && interaction.member.roles.cache.has(cfg.staffRoleId_stack2)) ||
-                     interaction.member.permissions.has(PermissionFlagsBits.Administrator);
-    
-    if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
+    const hasStaff = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || interaction.member.roles.cache.has(cfg.staffRoleId_stack2);
+    if (!hasStaff && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
+    }
     
     const embed = new EmbedBuilder()
       .setTitle('📊 СТАТИСТИКА ЗА НЕДЕЛЮ')
@@ -250,7 +518,7 @@ client.on('interactionCreate', async interaction => {
     await interaction.reply({ embeds: [embed], ephemeral: true });
   }
   
-  // ========== КОМАНДЫ СОЗДАНИЯ ТИКЕТОВ ==========
+  // ========== КОМАНДЫ СОЗДАНИЯ СООБЩЕНИЙ ==========
   if (interaction.isCommand() && (interaction.commandName === 'ticket_stack1' || interaction.commandName === 'ticket_stack2')) {
     if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
       return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
@@ -260,12 +528,9 @@ client.on('interactionCreate', async interaction => {
     await interaction.reply({ content: `✅ Сообщение для ${stack === 'stack1' ? 'СТАК 1' : 'СТАК 2'} создано!`, ephemeral: true });
   }
   
-  // ========== КНОПКИ СТАТУСА НАБОРА ==========
+  // ========== КНОПКИ ПЕРЕКЛЮЧЕНИЯ СТАТУСА ==========
   if (interaction.isButton() && (interaction.customId === 'toggle_stack1' || interaction.customId === 'toggle_stack2')) {
-    const hasStaff = (cfg.staffRoleId_stack1 && interaction.member.roles.cache.has(cfg.staffRoleId_stack1)) || 
-                     (cfg.staffRoleId_stack2 && interaction.member.roles.cache.has(cfg.staffRoleId_stack2)) ||
-                     interaction.member.permissions.has(PermissionFlagsBits.Administrator);
-    
+    const hasStaff = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || interaction.member.roles.cache.has(cfg.staffRoleId_stack2) || interaction.member.permissions.has(PermissionFlagsBits.Administrator);
     if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
     
     const stack = interaction.customId === 'toggle_stack1' ? 'stack1' : 'stack2';
@@ -284,7 +549,7 @@ client.on('interactionCreate', async interaction => {
     await interaction.update({ embeds: [embed], components: [row] });
   }
   
-  // ========== КНОПКИ ОТКРЫТИЯ АНКЕТЫ ТИКЕТА ==========
+  // ========== КНОПКИ ОТКРЫТИЯ АНКЕТЫ ==========
   if (interaction.isButton() && (interaction.customId === 'create_ticket_stack1' || interaction.customId === 'create_ticket_stack2')) {
     const stack = interaction.customId === 'create_ticket_stack1' ? 'stack1' : 'stack2';
     if (!ticketStatus[stack]) return interaction.reply({ content: '❌ Набор закрыт!', ephemeral: true });
@@ -302,7 +567,7 @@ client.on('interactionCreate', async interaction => {
     await interaction.showModal(modal);
   }
   
-  // ========== ОБРАБОТКА АНКЕТЫ ТИКЕТА ==========
+  // ========== ОБРАБОТКА АНКЕТЫ ==========
   if (interaction.isModalSubmit() && interaction.customId.startsWith('app_')) {
     const stack = interaction.customId.replace('app_', '');
     const name = interaction.fields.getTextInputValue('name');
@@ -327,33 +592,16 @@ client.on('interactionCreate', async interaction => {
     
     try {
       const staffRole = stack === 'stack1' ? cfg.staffRoleId_stack1 : cfg.staffRoleId_stack2;
-      
-      const permissionOverwrites = [
-        { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
-      ];
-      
-      if (staffRole) {
-        permissionOverwrites.push({
-          id: staffRole,
-          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]
-        });
-      }
-      
-      const channelOptions = {
+      const channel = await interaction.guild.channels.create({
         name: `${stack === 'stack1' ? '🔥' : '💧'}｜${stack === 'stack1' ? 'СТАК-1' : 'СТАК-2'}｜${interaction.user.username}`,
         type: ChannelType.GuildText,
-        permissionOverwrites: permissionOverwrites
-      };
-      
-      if (cfg.ticketCategory) {
-        try {
-          const category = await interaction.guild.channels.fetch(cfg.ticketCategory).catch(() => null);
-          if (category) channelOptions.parent = cfg.ticketCategory;
-        } catch (error) {}
-      }
-      
-      const channel = await interaction.guild.channels.create(channelOptions);
+        parent: cfg.ticketCategory,
+        permissionOverwrites: [
+          { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+          { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+          { id: staffRole, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+        ]
+      });
       
       const ticketId = `${interaction.user.id}_${stack}`;
       activeTickets.set(ticketId, { channelId: channel.id, userId: interaction.user.id, stackType: stack, status: 'pending', createdAt: Date.now() });
@@ -372,14 +620,9 @@ client.on('interactionCreate', async interaction => {
         new ButtonBuilder().setCustomId(`close_${channel.id}`).setEmoji('🔒').setStyle(ButtonStyle.Secondary)
       );
       
-      let content = '';
-      if (staffRole) content = `<@&${staffRole}>`;
-      
-      await channel.send({ content, embeds: [embed], components: [row] });
+      await channel.send({ content: `<@&${staffRole}>`, embeds: [embed], components: [row] });
       await interaction.editReply({ content: `✅ Заявка создана: ${channel}` });
-      
     } catch (error) {
-      console.error('❌ Ошибка создания тикета:', error);
       await interaction.editReply('❌ Ошибка создания!');
     }
   }
@@ -390,63 +633,41 @@ client.on('interactionCreate', async interaction => {
     
     if (id.startsWith('close_')) {
       const channelId = id.split('_')[1];
-      const hasStaff = (cfg.staffRoleId_stack1 && interaction.member.roles.cache.has(cfg.staffRoleId_stack1)) || 
-                       (cfg.staffRoleId_stack2 && interaction.member.roles.cache.has(cfg.staffRoleId_stack2)) ||
-                       interaction.member.permissions.has(PermissionFlagsBits.Administrator);
-      
+      const hasStaff = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || interaction.member.roles.cache.has(cfg.staffRoleId_stack2);
       if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
       
       await interaction.reply({ content: '🔒 Закрываю...', ephemeral: true });
       const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
       
-      for (const [tid, t] of activeTickets) {
-        if (t.channelId === channelId) {
-          clearTimeout(autoDeleteTimeouts.get(tid));
-          activeTickets.delete(tid);
-          break;
-        }
-      }
+      for (const [tid, t] of activeTickets) if (t.channelId === channelId) { clearTimeout(autoDeleteTimeouts.get(tid)); activeTickets.delete(tid); break; }
       setTimeout(() => channel?.delete().catch(() => {}), 2000);
     }
     
     if (id.startsWith('accept_') || id.startsWith('consider_') || id.startsWith('call_') || id.startsWith('deny_')) {
       const [action, userId, stack] = id.split('_');
       const staffRole = stack === 'stack1' ? cfg.staffRoleId_stack1 : cfg.staffRoleId_stack2;
-      
-      const hasStaff = (staffRole && interaction.member.roles.cache.has(staffRole)) || 
-                       interaction.member.permissions.has(PermissionFlagsBits.Administrator);
-      
-      if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
+      if (!interaction.member.roles.cache.has(staffRole)) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
       
       const ticketId = `${userId}_${stack}`;
       clearTimeout(autoDeleteTimeouts.get(ticketId));
       
       if (action === 'accept') {
-        if (stack === 'stack1') { stats.stack1.accepted++; stats.stack1.weekAccepted++; } 
-        else { stats.stack2.accepted++; stats.stack2.weekAccepted++; }
+        if (stack === 'stack1') { stats.stack1.accepted++; stats.stack1.weekAccepted++; } else { stats.stack2.accepted++; stats.stack2.weekAccepted++; }
         saveStats();
-        
-        if (cfg.memberRoleId) {
-          await interaction.guild.members.fetch(userId).then(m => m.roles.add(cfg.memberRoleId)).catch(() => {});
-        }
-        
+        if (cfg.memberRoleId) await interaction.guild.members.fetch(userId).then(m => m.roles.add(cfg.memberRoleId)).catch(() => {});
         await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0x00FF00)], components: [] });
         await interaction.channel.send(`<@${userId}> 🎉 Заявка принята!`);
         setTimeout(() => interaction.channel.delete(), 12 * 60 * 60 * 1000);
-        
       } else if (action === 'consider') {
         await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0xFFA500)], components: interaction.message.components });
         await interaction.channel.send(`<@${userId}> Заявка на рассмотрении.`);
-        
       } else if (action === 'call') {
         await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0x808080)], components: interaction.message.components });
         const vc = interaction.member.voice.channel;
         const invite = vc ? await vc.createInvite({ maxAge: 86400, maxUses: 1 }).catch(() => null) : null;
         await interaction.channel.send(`<@${userId}> 📞 Обзвон!${invite ? `\n🔊 ${invite.url}` : ''}`);
-        
       } else if (action === 'deny') {
-        if (stack === 'stack1') { stats.stack1.denied++; stats.stack1.weekDenied++; } 
-        else { stats.stack2.denied++; stats.stack2.weekDenied++; }
+        if (stack === 'stack1') { stats.stack1.denied++; stats.stack1.weekDenied++; } else { stats.stack2.denied++; stats.stack2.weekDenied++; }
         saveStats();
         await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0xFF0000)], components: [] });
         await interaction.channel.send(`<@${userId}> 😔 Заявка отклонена.`);
@@ -461,7 +682,7 @@ client.on('error', e => console.error('❌', e));
 process.on('unhandledRejection', e => console.error('❌', e));
 
 // ЗАПУСК
-const token = process.env.DISCORD_TOKEN || config?.token;
+const token = process.env.DISCORD_TOKEN || config.token;
 if (!token) { console.error('❌ ТОКЕН НЕ НАЙДЕН!'); process.exit(1); }
 client.login(token);
 
