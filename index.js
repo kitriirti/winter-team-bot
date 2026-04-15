@@ -146,22 +146,43 @@ function getWorkingHoursMessage() {
 
 async function sendLog(guildId, embed) {
   try {
+    console.log(`📝 [DEBUG] Отправка лога для сервера ${guildId}`);
+    
     const cfg = getConfig();
-    if (!cfg.logChannelId) return;
+    console.log(`📝 [DEBUG] LOG_CHANNEL_ID из конфига: ${cfg.logChannelId}`);
+    
+    if (!cfg.logChannelId) {
+      console.log('❌ [DEBUG] LOG_CHANNEL_ID не настроен!');
+      return;
+    }
     
     const guild = client.guilds.cache.get(guildId);
-    if (!guild) return;
+    if (!guild) {
+      console.log(`❌ [DEBUG] Сервер ${guildId} не найден!`);
+      return;
+    }
     
-    const channel = await guild.channels.fetch(cfg.logChannelId).catch(() => null);
-    if (!channel) return;
+    console.log(`📝 [DEBUG] Сервер: ${guild.name}`);
+    
+    const channel = await guild.channels.fetch(cfg.logChannelId).catch(err => {
+      console.error(`❌ [DEBUG] Ошибка получения канала ${cfg.logChannelId}:`, err.message);
+      return null;
+    });
+    
+    if (!channel) {
+      console.log(`❌ [DEBUG] Канал ${cfg.logChannelId} не найден!`);
+      return;
+    }
+    
+    console.log(`📝 [DEBUG] Канал: ${channel.name}`);
     
     await channel.send({ embeds: [embed] });
-    console.log(`📝 [${guild.name}] Лог отправлен`);
+    console.log(`✅ [DEBUG] Лог отправлен в канал ${channel.name} на сервере ${guild.name}`);
+    
   } catch (error) {
-    console.error('❌ Ошибка отправки лога:', error.message);
+    console.error('❌ [DEBUG] Ошибка отправки лога:', error);
   }
 }
-
 function scheduleAutoDelete(channelId, ticketId) {
   const timeout = setTimeout(async () => {
     try {
