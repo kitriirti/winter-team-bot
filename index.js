@@ -170,7 +170,7 @@ client.once('ready', async () => {
     }
     const displayText = currentText || 'w';
     client.user.setActivity(displayText, { type: 2 });
-  }, 1000);
+  }, 5000);
   
   try {
     await client.application.commands.set([
@@ -421,6 +421,7 @@ client.on('interactionCreate', async interaction => {
       const ticketId = `${userId}_${stack}`;
       clearTimeout(autoDeleteTimeouts.get(ticketId));
       
+      // ========== ПРИНЯТЬ ==========
       if (action === 'accept') {
         if (stack === 'stack1') { stats.stack1.accepted++; stats.stack1.weekAccepted++; } 
         else { stats.stack2.accepted++; stats.stack2.weekAccepted++; }
@@ -432,27 +433,131 @@ client.on('interactionCreate', async interaction => {
         
         await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0x00FF00)], components: [] });
         await interaction.channel.send(`<@${userId}> 🎉 Заявка принята!`);
-        setTimeout(() => interaction.channel.delete(), 12 * 60 * 60 * 1000);
         
-      } else if (action === 'consider') {
+        // Авто-удаление через 1 час (вместо 12)
+        setTimeout(() => interaction.channel.delete().catch(() => {}), 60 * 60 * 1000);
+        await interaction.channel.send(`⏰ **Этот канал будет автоматически удалён через 1 час.**`);
+      } 
+      
+      // ========== НА РАССМОТРЕНИЕ ==========
+      else if (action === 'consider') {
         await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0xFFA500)], components: interaction.message.components });
         await interaction.channel.send(`<@${userId}> Заявка на рассмотрении.`);
-        
-      } else if (action === 'call') {
+      } 
+      
+      // ========== НА ОБЗВОН (ССЫЛКА НА ВОЙС) ==========
+      else if (action === 'call') {
         await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0x808080)], components: interaction.message.components });
-        const vc = interaction.member.voice.channel;
-        const invite = vc ? await vc.createInvite({ maxAge: 86400, maxUses: 1 }).catch(() => null) : null;
-        await interaction.channel.send(`<@${userId}> 📞 Обзвон!${invite ? `\n🔊 ${invite.url}` : ''}`);
         
-      } else if (action === 'deny') {
-        if (stack === 'stack1') { stats.stack1.denied++; stats.stack1.weekDenied++; } 
-        else { stats.stack2.denied++; stats.stack2.weekDenied++; }
-        saveStats();
-        await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0xFF0000)], components: [] });
-        await interaction.channel.send(`<@${userId}> 😔 Заявка отклонена.`);
-        setTimeout(() => interaction.channel.delete(), 5000);
+        const staffMember = interaction.member;
+        const voiceChannel = staffMember.voice.channel;
+        
+        let voiceInvite = '';
+        if (voiceChannel) {
+          try {
+            const invite = await voiceChannel.createInvite({
+              maxAge: 86400,
+              maxUses: 1,
+              reason: `Обзвон для заявки ${userId}`
+            });
+            voiceInvite = `\n\n🔊 **Голосовой канал:** ${invite.url}`;
+          } catch (error) {
+            console.error('Ошибка создания приглашения:', error);
+            voiceInvite = '\n\n⚠️ Не удалось создать приглашение в канал.';
+          }
+        } else {
+          voiceInvite = '\n\n⚠️ Стафф не находится в голосовом канале.';
+        }
+        
+        await interaction.channel.send(`<@${userId}> 📞 Вы **ВЫЗВАНЫ НА ОБЗВОН** в **${stack === 'stack1' ? 'СТАК 1' : 'СТАК 2'}**.${voiceInvite}`);
+        
+        // Уведомление в ЛС
+        try {
+          const targetUser = await client.users.fetch(userId);
+          await targetUser.send({
+            embeds: [new EmbedBuilder()
+              .setTitle(`📞 ВЫЗОВ НА ОБЗВОН | ${stack === 'stack1' ? 'СТАК 1' : 'СТАК 2'}`)
+              .setColor(0x808080)
+              .setDescription(`**Вы были вызваны на обзвон!**\n\n👤 **Стафф:** ${interaction.user.tag}${voiceInvite ? `\n\n${voiceInvite}` : ''}`)
+            ]
+          });
+        } catch (error) {}
+      } 
+      
+      // ========== ОТКЛОНИТЬ (ОТКРЫВАЕМ МОДАЛЬНОЕ ОКНО) ==========
+      else if (action === 'deny') {
+        const modal = new ModalBuilder()
+          .setCustomId(`deny_reason_${userId}_${stack}_${interaction.channel.id}`)
+          .setTitle('❌ Причина отклонения');
+        
+        const reasonInput = new TextInputBuilder()
+          .setCustomId('reason')
+          .setLabel('Укажите причину отклонения')
+          .setPlaceholder('Например: Недостаточно часов...')
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMaxLength(500);
+        
+        modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
+        
+        await interaction.showModal(modal);
+        return; // Важно: не удаляем тикет из activeTickets
       }
+      
       activeTickets.delete(ticketId);
+    }
+  }
+  
+  // ========== ОБРАБОТКА ПРИЧИНЫ ОТКЛОНЕНИЯ ==========
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('deny_reason_')) {
+    const [_, userId, stack, channelId] = interaction.customId.split('_');
+    const reason = interaction.fields.getTextInputValue('reason');
+    
+    const staffRole = stack === 'stack1' ? cfg.staffRoleId_stack1 : cfg.staffRoleId_stack2;
+    const hasStaff = (staffRole && interaction.member.roles.cache.has(staffRole)) || 
+                     interaction.member.permissions.has(PermissionFlagsBits.Administrator);
+    
+    if (!hasStaff) {
+      return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
+    }
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
+      
+      // Статистика
+      if (stack === 'stack1') { stats.stack1.denied++; stats.stack1.weekDenied++; } 
+      else { stats.stack2.denied++; stats.stack2.weekDenied++; }
+      saveStats();
+      
+      const ticketId = `${userId}_${stack}`;
+      clearTimeout(autoDeleteTimeouts.get(ticketId));
+      activeTickets.delete(ticketId);
+      
+      // Уведомление в канал
+      if (channel) {
+        await channel.send(`<@${userId}> 😔 **Заявка отклонена.**\n**Причина:** ${reason}`);
+        setTimeout(() => channel.delete().catch(() => {}), 5000);
+      }
+      
+      // Уведомление в ЛС
+      try {
+        const targetUser = await client.users.fetch(userId);
+        await targetUser.send({
+          embeds: [new EmbedBuilder()
+            .setTitle(`❌ ЗАЯВКА ОТКЛОНЕНА | ${stack === 'stack1' ? 'СТАК 1' : 'СТАК 2'}`)
+            .setColor(0xFF0000)
+            .setDescription(`**Причина:** ${reason}\n\nВы можете подать заявку повторно позже.`)
+          ]
+        });
+      } catch (error) {}
+      
+      await interaction.editReply({ content: '✅ Заявка отклонена!', ephemeral: true });
+      
+    } catch (error) {
+      console.error('❌ Ошибка отклонения:', error);
+      await interaction.editReply({ content: '❌ Ошибка!', ephemeral: true });
     }
   }
 });
