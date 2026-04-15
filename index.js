@@ -330,7 +330,23 @@ client.on('interactionCreate', async interaction => {
       }
       
       const warnRoles = member.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
-      const warnsList = warnRoles.map(r => `- ${r.name}`).join('\n');
+      
+      // Формируем красивый список варнов с причинами и отработками
+      const warnsList = warnRoles.map(role => {
+        const roleName = role.name;
+        // Пробуем извлечь причину и отработку из названия роли
+        const reasonMatch = roleName.match(/📝(.+?)(?:\||$)/);
+        const workoffMatch = roleName.match(/🔄(.+?)(?:\||$)/);
+        
+        let displayName = roleName;
+        if (reasonMatch) {
+          displayName += `\n   └ 📝 **Причина:** ${reasonMatch[1].trim()}`;
+        }
+        if (workoffMatch) {
+          displayName += `\n   └ 🔄 **Отработка:** ${workoffMatch[1].trim()}`;
+        }
+        return `- ${displayName}`;
+      }).join('\n\n');
       
       console.log(`📝 Создание канала обжалования для ${user.tag}`);
       
@@ -358,8 +374,8 @@ client.on('interactionCreate', async interaction => {
         .setTitle(`${emoji} ${type === 'обжалование' ? 'ОБЖАЛОВАНИЕ' : 'ОТРАБОТКА'} ВАРНА`)
         .setColor(0xFFA500)
         .setDescription(
-          `**Пользователь:** <@${user.id}>\n` +
-          `**Активные варны:**\n${warnsList}\n\n` +
+          `**Пользователь:** <@${user.id}>\n\n` +
+          `**Активные варны:**\n${warnsList || 'Нет активных варнов'}\n\n` +
           `**${type === 'обжалование' ? 'Причина обжалования' : 'Что сделано'}:**\n> ${reason}`
         )
         .setTimestamp();
@@ -639,7 +655,11 @@ client.on('interactionCreate', async interaction => {
       
       const today = new Date();
       const dateStr = `${today.getDate().toString().padStart(2, '0')}.${(today.getMonth()+1).toString().padStart(2, '0')}.${today.getFullYear()}`;
-      const roleName = isForever ? `⚠️ Warn (навсегда)` : `⚠️ Warn (${dateStr}) [${durationDays}д]`;
+      
+      // Формируем название роли с причиной и отработкой
+      let roleName = isForever ? `⚠️ Warn (навсегда)` : `⚠️ Warn (${dateStr}) [${durationDays}д]`;
+      if (reason) roleName += ` | 📝 ${reason}`;
+      if (workoff) roleName += ` | 🔄 ${workoff}`;
       
       let warnRole = interaction.guild.roles.cache.find(r => r.name === roleName);
       if (!warnRole) {
