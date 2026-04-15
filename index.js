@@ -346,84 +346,77 @@ client.on('interactionCreate', async interaction => {
     await interaction.showModal(modal);
   }
   
-  // ========== ОБРАБОТКА МОДАЛЬНОГО ОКНА ОБЖАЛОВАНИЯ/ОТРАБОТКИ ==========
-  if (interaction.isModalSubmit() && interaction.customId.startsWith('appeal_modal_')) {
-    const type = interaction.customId.replace('appeal_modal_', '');
-    const reason = interaction.fields.getTextInputValue('reason');
-    const emoji = type === 'обжалование' ? '📝' : '✅';
+// ========== ОБРАБОТКА МОДАЛЬНОГО ОКНА ОБЖАЛОВАНИЯ/ОТРАБОТКИ ==========
+if (interaction.isModalSubmit() && interaction.customId.startsWith('appeal_modal_')) {
+  const type = interaction.customId.replace('appeal_modal_', '');
+  const reason = interaction.fields.getTextInputValue('reason');
+  const emoji = type === 'обжалование' ? '📝' : '✅';
+  
+  await interaction.deferReply({ ephemeral: true });
+  
+  try {
+    const user = interaction.user;
+    const warnRoles = user.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
+    const warnsList = warnRoles.map(r => `- ${r.name}`).join('\n');
     
-    await interaction.deferReply({ ephemeral: true });
+    // Создаём канал - максимально просто
+    const appealChannel = await interaction.guild.channels.create({
+      name: `${emoji}-${type}-${user.username}`,
+      type: ChannelType.GuildText,
+      permissionOverwrites: [
+        { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+        { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+      ]
+    });
     
-    try {
-      const user = interaction.user;
-      const warnRoles = user.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
-      const warnsList = warnRoles.map(r => `- ${r.name}`).join('\n');
-      
-      // Создаём канал БЕЗ категории (чтобы избежать ошибок)
-      const channelOptions = {
-        name: `${emoji}-${type}-${user.username}`,
-        type: ChannelType.GuildText,
-        permissionOverwrites: [
-          { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-          { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
-        ]
-      };
-      
-      // Пробуем добавить категорию если она есть
-      if (cfg.appealCategory) {
-        try {
-          const category = await interaction.guild.channels.fetch(cfg.appealCategory).catch(() => null);
-          if (category) channelOptions.parent = cfg.appealCategory;
-        } catch (error) {}
-      }
-      
-      // Добавляем права для стаффа
-      if (cfg.staffRoleId_stack1) {
-        channelOptions.permissionOverwrites.push({
-          id: cfg.staffRoleId_stack1,
-          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels]
-        });
-      }
-      if (cfg.staffRoleId_stack2) {
-        channelOptions.permissionOverwrites.push({
-          id: cfg.staffRoleId_stack2,
-          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels]
-        });
-      }
-      
-      const appealChannel = await interaction.guild.channels.create(channelOptions);
-      
-      const embed = new EmbedBuilder()
-        .setTitle(`${emoji} ${type === 'обжалование' ? 'ОБЖАЛОВАНИЕ' : 'ОТРАБОТКА'} ВАРНА`)
-        .setColor(0xFFA500)
-        .setDescription(
-          `**Пользователь:** <@${user.id}>\n` +
-          `**Активные варны:**\n${warnsList}\n\n` +
-          `**${type === 'обжалование' ? 'Причина обжалования' : 'Что сделано'}:**\n> ${reason}`
-        )
-        .setTimestamp();
-      
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`remove_warn_${user.id}_${appealChannel.id}`).setLabel('Снять варн').setEmoji('✅').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`close_appeal_${appealChannel.id}`).setLabel('Закрыть').setEmoji('🔒').setStyle(ButtonStyle.Secondary)
-      );
-      
-      let content = '';
-      if (cfg.staffRoleId_stack1) content += `<@&${cfg.staffRoleId_stack1}> `;
-      if (cfg.staffRoleId_stack2) content += `<@&${cfg.staffRoleId_stack2}>`;
-      
-      await appealChannel.send({ content: content || 'Стафф', embeds: [embed], components: [row] });
-      
-      await interaction.editReply({ 
-        content: `✅ Ваше обращение создано! Ожидайте в канале ${appealChannel}`,
-        ephemeral: true 
-      });
-      
-    } catch (error) {
-      console.error('❌ Ошибка создания обращения:', error);
-      await interaction.editReply({ content: '❌ Произошла ошибка! Попробуйте позже.', ephemeral: true });
+    // Добавляем права для стаффа если есть
+    if (cfg.staffRoleId_stack1) {
+      await appealChannel.permissionOverwrites.create(cfg.staffRoleId_stack1, {
+        ViewChannel: true,
+        SendMessages: true,
+        ManageChannels: true
+      }).catch(() => {});
     }
+    if (cfg.staffRoleId_stack2) {
+      await appealChannel.permissionOverwrites.create(cfg.staffRoleId_stack2, {
+        ViewChannel: true,
+        SendMessages: true,
+        ManageChannels: true
+      }).catch(() => {});
+    }
+    
+    const embed = new EmbedBuilder()
+      .setTitle(`${emoji} ${type === 'обжалование' ? 'ОБЖАЛОВАНИЕ' : 'ОТРАБОТКА'} ВАРНА`)
+      .setColor(0xFFA500)
+      .setDescription(
+        `**Пользователь:** <@${user.id}>\n` +
+        `**Активные варны:**\n${warnsList}\n\n` +
+        `**${type === 'обжалование' ? 'Причина обжалования' : 'Что сделано'}:**\n> ${reason}`
+      )
+      .setTimestamp();
+    
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`remove_warn_${user.id}_${appealChannel.id}`).setLabel('Снять варн').setEmoji('✅').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`close_appeal_${appealChannel.id}`).setLabel('Закрыть').setEmoji('🔒').setStyle(ButtonStyle.Secondary)
+    );
+    
+    let content = '';
+    if (cfg.staffRoleId_stack1) content += `<@&${cfg.staffRoleId_stack1}> `;
+    if (cfg.staffRoleId_stack2) content += `<@&${cfg.staffRoleId_stack2}>`;
+    if (!content) content = 'Стафф';
+    
+    await appealChannel.send({ content, embeds: [embed], components: [row] });
+    
+    await interaction.editReply({ 
+      content: `✅ Ваше обращение создано! Ожидайте в канале ${appealChannel}`,
+      ephemeral: true 
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка создания обращения:', error);
+    await interaction.editReply({ content: '❌ Произошла ошибка! Попробуйте позже.', ephemeral: true });
   }
+}
   
   // ========== КНОПКА "СНЯТЬ ВАРН" ==========
   if (interaction.isButton() && interaction.customId.startsWith('remove_warn_')) {
