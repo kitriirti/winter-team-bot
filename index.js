@@ -85,6 +85,7 @@ async function cleanExpiredWarns(guild) {
   const warnRoles = guild.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
 
   for (const role of warnRoles.values()) {
+    // Для ролей с датой и сроком: "⚠️ Warn (15.04.2026) [7д]"
     const nameMatch = role.name.match(/⚠️ Warn \((\d{2}\.\d{2}\.\d{4})\) \[(\d+)д\]/);
     if (!nameMatch) continue;
     
@@ -242,6 +243,7 @@ client.once('ready', async () => {
     await client.application.commands.create({ name: 'ping', description: 'Проверить задержку бота' });
     await client.application.commands.create({ name: 'warn', description: 'Выдать предупреждение пользователю' });
     await client.application.commands.create({ name: 'unwarn', description: 'Снять все предупреждения с пользователя' });
+    await client.application.commands.create({ name: 'appeal_panel', description: 'Создать панель обжалования/отработки варнов' });
     
     console.log('✅ Команды зарегистрированы!');
   } catch (error) {
@@ -251,6 +253,227 @@ client.once('ready', async () => {
 
 client.on('interactionCreate', async interaction => {
   const cfg = getConfig();
+  
+  // ========== КОМАНДА /appeal_panel ==========
+  if (interaction.isCommand() && interaction.commandName === 'appeal_panel') {
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
+    }
+    
+    const embed = new EmbedBuilder()
+      .setTitle('📋 ОБЖАЛОВАНИЕ / ОТРАБОТКА ВАРНОВ')
+      .setDescription(
+        '**Если у вас есть активные предупреждения, вы можете:**\n\n' +
+        '📝 **Подать на обжалование** — если считаете варн несправедливым\n' +
+        '✅ **Подать на отработку** — если выполнили условия отработки\n\n' +
+        'Нажмите соответствующую кнопку ниже.'
+      )
+      .setColor(0xFFA500)
+      .setTimestamp();
+    
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('appeal_ticket')
+        .setLabel('Обжалование')
+        .setEmoji('📝')
+        .setStyle(ButtonStyle.Primary),
+      
+      new ButtonBuilder()
+        .setCustomId('workoff_ticket')
+        .setLabel('Отработка')
+        .setEmoji('✅')
+        .setStyle(ButtonStyle.Success)
+    );
+    
+    await interaction.channel.send({ embeds: [embed], components: [row] });
+    await interaction.reply({ content: '✅ Панель создана!', ephemeral: true });
+  }
+  
+  // ========== КНОПКИ ПАНЕЛИ ОБЖАЛОВАНИЯ ==========
+  if (interaction.isButton() && (interaction.customId === 'appeal_ticket' || interaction.customId === 'workoff_ticket')) {
+    const type = interaction.customId === 'appeal_ticket' ? 'обжалование' : 'отработка';
+    const emoji = interaction.customId === 'appeal_ticket' ? '📝' : '✅';
+    
+    // Проверяем, есть ли у пользователя варны
+    const warnRoles = interaction.member.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
+    
+    if (warnRoles.size === 0) {
+      return interaction.reply({ 
+        content: '❌ У вас нет активных предупреждений!', 
+        ephemeral: true 
+      });
+    }
+    
+    const modal = new ModalBuilder()
+      .setCustomId(`appeal_modal_${type}`)
+      .setTitle(`${emoji} ${type === 'обжалование' ? 'Обжалование' : 'Отработка'} варна`);
+    
+    const reasonInput = new TextInputBuilder()
+      .setCustomId('reason')
+      .setLabel(type === 'обжалование' ? 'Почему варн несправедлив?' : 'Что вы сделали для отработки?')
+      .setPlaceholder('Опишите вашу ситуацию...')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(true)
+      .setMaxLength(500);
+    
+    modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
+    
+    await interaction.showModal(modal);
+  }
+  
+  // ========== ОБРАБОТКА МОДАЛЬНОГО ОКНА ОБЖАЛОВАНИЯ/ОТРАБОТКИ ==========
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('appeal_modal_')) {
+    const type = interaction.customId.replace('appeal_modal_', '');
+    const reason = interaction.fields.getTextInputValue('reason');
+    const emoji = type === 'обжалование' ? '📝' : '✅';
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const user = interaction.user;
+      const warnRoles = user.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
+      
+      // Список варнов пользователя
+      const warnsList = warnRoles.map(r => `- ${r.name}`).join('\n');
+      
+      // Создаём канал для обжалования/отработки
+      const appealChannel = await interaction.guild.channels.create({
+        name: `${emoji}-${type}-${user.username}`,
+        type: ChannelType.GuildText,
+        parent: cfg.ticketCategory,
+        permissionOverwrites: [
+          { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+          { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+          { id: cfg.staffRoleId_stack1, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
+          { id: cfg.staffRoleId_stack2, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] }
+        ]
+      });
+      
+      const embed = new EmbedBuilder()
+        .setTitle(`${emoji} ${type === 'обжалование' ? 'ОБЖАЛОВАНИЕ' : 'ОТРАБОТКА'} ВАРНА`)
+        .setColor(0xFFA500)
+        .setDescription(
+          `**Пользователь:** <@${user.id}>\n` +
+          `**Активные варны:**\n${warnsList}\n\n` +
+          `**${type === 'обжалование' ? 'Причина обжалования' : 'Что сделано'}:**\n> ${reason}`
+        )
+        .setTimestamp();
+      
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`remove_warn_${user.id}_${appealChannel.id}`)
+          .setLabel('Снять варн')
+          .setEmoji('✅')
+          .setStyle(ButtonStyle.Success),
+        
+        new ButtonBuilder()
+          .setCustomId(`close_appeal_${appealChannel.id}`)
+          .setLabel('Закрыть')
+          .setEmoji('🔒')
+          .setStyle(ButtonStyle.Secondary)
+      );
+      
+      await appealChannel.send({
+        content: `<@&${cfg.staffRoleId_stack1}> <@&${cfg.staffRoleId_stack2}>`,
+        embeds: [embed],
+        components: [row]
+      });
+      
+      await interaction.editReply({ 
+        content: `✅ Ваше обращение создано! Ожидайте в канале ${appealChannel}`,
+        ephemeral: true 
+      });
+      
+    } catch (error) {
+      console.error('❌ Ошибка создания обращения:', error);
+      await interaction.editReply({ content: '❌ Произошла ошибка!', ephemeral: true });
+    }
+  }
+  
+  // ========== КНОПКА "СНЯТЬ ВАРН" В ТИКЕТЕ ОБЖАЛОВАНИЯ ==========
+  if (interaction.isButton() && interaction.customId.startsWith('remove_warn_')) {
+    const parts = interaction.customId.split('_');
+    const userId = parts[2];
+    const channelId = parts[3];
+    
+    const hasStaffRole = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || 
+                         interaction.member.roles.cache.has(cfg.staffRoleId_stack2) ||
+                         interaction.member.permissions.has(PermissionFlagsBits.Administrator);
+    
+    if (!hasStaffRole) {
+      return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
+    }
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const member = await interaction.guild.members.fetch(userId).catch(() => null);
+      if (!member) {
+        return interaction.editReply('❌ Пользователь не найден!');
+      }
+      
+      const removedCount = await removeAllWarns(member);
+      
+      if (removedCount === 0) {
+        return interaction.editReply(`ℹ️ У ${member.user.tag} нет активных предупреждений.`);
+      }
+      
+      // Обновляем Embed
+      const originalEmbed = interaction.message.embeds[0];
+      const newEmbed = EmbedBuilder.from(originalEmbed)
+        .setColor(0x00FF00)
+        .setFooter({ text: `✅ Варны сняты модератором ${interaction.user.tag}` });
+      
+      await interaction.message.edit({ embeds: [newEmbed], components: [] });
+      
+      await interaction.editReply({ content: `✅ Снято ${removedCount} варнов с ${member.user.tag}!`, ephemeral: true });
+      
+      await interaction.channel.send(`✅ **Варны сняты!** Модератор: <@${interaction.user.id}>`);
+      
+      // Уведомление пользователю
+      try {
+        await member.send({
+          embeds: [new EmbedBuilder()
+            .setTitle('✅ Предупреждения сняты')
+            .setColor(0x00FF00)
+            .setDescription(`**Модератор:** ${interaction.user.tag}\n**Снято варнов:** ${removedCount}`)
+          ]
+        });
+      } catch (error) {}
+      
+      // Закрываем канал через 5 секунд
+      setTimeout(async () => {
+        try {
+          await interaction.channel.delete();
+        } catch (error) {}
+      }, 5000);
+      
+    } catch (error) {
+      console.error('❌ Ошибка снятия варна:', error);
+      await interaction.editReply('❌ Произошла ошибка!');
+    }
+  }
+  
+  // ========== КНОПКА "ЗАКРЫТЬ" В ТИКЕТЕ ОБЖАЛОВАНИЯ ==========
+  if (interaction.isButton() && interaction.customId.startsWith('close_appeal_')) {
+    const channelId = interaction.customId.replace('close_appeal_', '');
+    
+    const hasStaffRole = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || 
+                         interaction.member.roles.cache.has(cfg.staffRoleId_stack2) ||
+                         interaction.member.permissions.has(PermissionFlagsBits.Administrator);
+    
+    if (!hasStaffRole) {
+      return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
+    }
+    
+    await interaction.reply({ content: '🔒 Закрываю...', ephemeral: true });
+    
+    setTimeout(async () => {
+      try {
+        await interaction.channel.delete();
+      } catch (error) {}
+    }, 2000);
+  }
   
   // ========== КОМАНДА /unwarn (снятие всех варнов) ==========
   if (interaction.isCommand() && interaction.commandName === 'unwarn') {
@@ -518,7 +741,7 @@ client.on('interactionCreate', async interaction => {
     await interaction.reply({ embeds: [embed], ephemeral: true });
   }
   
-  // ========== КОМАНДЫ СОЗДАНИЯ СООБЩЕНИЙ ==========
+  // ========== КОМАНДЫ СОЗДАНИЯ СООБЩЕНИЙ ДЛЯ ТИКЕТОВ ==========
   if (interaction.isCommand() && (interaction.commandName === 'ticket_stack1' || interaction.commandName === 'ticket_stack2')) {
     if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
       return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
@@ -528,7 +751,7 @@ client.on('interactionCreate', async interaction => {
     await interaction.reply({ content: `✅ Сообщение для ${stack === 'stack1' ? 'СТАК 1' : 'СТАК 2'} создано!`, ephemeral: true });
   }
   
-  // ========== КНОПКИ ПЕРЕКЛЮЧЕНИЯ СТАТУСА ==========
+  // ========== КНОПКИ ПЕРЕКЛЮЧЕНИЯ СТАТУСА НАБОРА ==========
   if (interaction.isButton() && (interaction.customId === 'toggle_stack1' || interaction.customId === 'toggle_stack2')) {
     const hasStaff = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || interaction.member.roles.cache.has(cfg.staffRoleId_stack2) || interaction.member.permissions.has(PermissionFlagsBits.Administrator);
     if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
@@ -549,7 +772,7 @@ client.on('interactionCreate', async interaction => {
     await interaction.update({ embeds: [embed], components: [row] });
   }
   
-  // ========== КНОПКИ ОТКРЫТИЯ АНКЕТЫ ==========
+  // ========== КНОПКИ ОТКРЫТИЯ АНКЕТЫ ТИКЕТА ==========
   if (interaction.isButton() && (interaction.customId === 'create_ticket_stack1' || interaction.customId === 'create_ticket_stack2')) {
     const stack = interaction.customId === 'create_ticket_stack1' ? 'stack1' : 'stack2';
     if (!ticketStatus[stack]) return interaction.reply({ content: '❌ Набор закрыт!', ephemeral: true });
@@ -567,7 +790,7 @@ client.on('interactionCreate', async interaction => {
     await interaction.showModal(modal);
   }
   
-  // ========== ОБРАБОТКА АНКЕТЫ ==========
+  // ========== ОБРАБОТКА АНКЕТЫ ТИКЕТА ==========
   if (interaction.isModalSubmit() && interaction.customId.startsWith('app_')) {
     const stack = interaction.customId.replace('app_', '');
     const name = interaction.fields.getTextInputValue('name');
@@ -634,7 +857,9 @@ client.on('interactionCreate', async interaction => {
     if (id.startsWith('close_')) {
       const channelId = id.split('_')[1];
       const hasStaff = interaction.member.roles.cache.has(cfg.staffRoleId_stack1) || interaction.member.roles.cache.has(cfg.staffRoleId_stack2);
-      if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
+      if (!hasStaff && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
+      }
       
       await interaction.reply({ content: '🔒 Закрываю...', ephemeral: true });
       const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
@@ -646,7 +871,9 @@ client.on('interactionCreate', async interaction => {
     if (id.startsWith('accept_') || id.startsWith('consider_') || id.startsWith('call_') || id.startsWith('deny_')) {
       const [action, userId, stack] = id.split('_');
       const staffRole = stack === 'stack1' ? cfg.staffRoleId_stack1 : cfg.staffRoleId_stack2;
-      if (!interaction.member.roles.cache.has(staffRole)) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
+      if (!interaction.member.roles.cache.has(staffRole) && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
+      }
       
       const ticketId = `${userId}_${stack}`;
       clearTimeout(autoDeleteTimeouts.get(ticketId));
