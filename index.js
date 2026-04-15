@@ -14,8 +14,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.DirectMessages
+    GatewayIntentBits.GuildVoiceStates
   ],
   partials: ['CHANNEL', 'MESSAGE']
 });
@@ -79,51 +78,6 @@ function saveTicketStatus() {
   }
 }
 
-// ========== ОЧИСТКА ПРОСРОЧЕННЫХ ВАРНОВ ==========
-async function cleanExpiredWarns(guild) {
-  const now = new Date();
-  const warnRoles = guild.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
-
-  for (const role of warnRoles.values()) {
-    const nameMatch = role.name.match(/⚠️ Warn \((\d{2}\.\d{2}\.\d{4})\) \[(\d+)д\]/);
-    if (!nameMatch) continue;
-    
-    const dateStr = nameMatch[1];
-    const durationDays = parseInt(nameMatch[2]);
-    
-    const [day, month, year] = dateStr.split('.');
-    const issueDate = new Date(`${year}-${month}-${day}`);
-    const expireDate = new Date(issueDate);
-    expireDate.setDate(expireDate.getDate() + durationDays);
-    
-    if (now >= expireDate) {
-      console.log(`🗑️ [${guild.name}] Удаляем просроченный варн: ${role.name}`);
-      
-      for (const member of role.members.values()) {
-        await member.roles.remove(role).catch(() => {});
-      }
-      
-      await role.delete().catch(() => {});
-    }
-  }
-}
-
-// ========== СНЯТИЕ ВСЕХ ВАРНОВ С ПОЛЬЗОВАТЕЛЯ ==========
-async function removeAllWarns(member) {
-  const warnRoles = member.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
-  
-  for (const role of warnRoles.values()) {
-    await member.roles.remove(role).catch(() => {});
-    
-    if (role.members.size === 0) {
-      await role.delete().catch(() => {});
-    }
-  }
-  
-  return warnRoles.size;
-}
-
-// ========== ПОЛУЧЕНИЕ НАСТРОЕК ==========
 const getConfig = () => {
   return {
     token: process.env.DISCORD_TOKEN || config?.token,
@@ -144,43 +98,14 @@ function getWorkingHoursMessage() {
   return `\n**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n⏰ *Заявки рассматриваются с 10:00 до 21:00 по МСК.*`;
 }
 
-async function sendLog(guildId, embed) {
+async function sendLog(channelId, embed) {
   try {
-    console.log(`📝 [DEBUG] Отправка лога для сервера ${guildId}`);
-    
-    const cfg = getConfig();
-    console.log(`📝 [DEBUG] LOG_CHANNEL_ID из конфига: ${cfg.logChannelId}`);
-    
-    if (!cfg.logChannelId) {
-      console.log('❌ [DEBUG] LOG_CHANNEL_ID не настроен!');
-      return;
-    }
-    
-    const guild = client.guilds.cache.get(guildId);
-    if (!guild) {
-      console.log(`❌ [DEBUG] Сервер ${guildId} не найден!`);
-      return;
-    }
-    
-    console.log(`📝 [DEBUG] Сервер: ${guild.name}`);
-    
-    const channel = await guild.channels.fetch(cfg.logChannelId).catch(err => {
-      console.error(`❌ [DEBUG] Ошибка получения канала ${cfg.logChannelId}:`, err.message);
-      return null;
-    });
-    
-    if (!channel) {
-      console.log(`❌ [DEBUG] Канал ${cfg.logChannelId} не найден!`);
-      return;
-    }
-    
-    console.log(`📝 [DEBUG] Канал: ${channel.name}`);
-    
+    if (!channelId) return;
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel) return;
     await channel.send({ embeds: [embed] });
-    console.log(`✅ [DEBUG] Лог отправлен в канал ${channel.name} на сервере ${guild.name}`);
-    
   } catch (error) {
-    console.error('❌ [DEBUG] Ошибка отправки лога:', error);
+    console.error('❌ Ошибка отправки лога:', error.message);
   }
 }
 
@@ -247,28 +172,13 @@ client.once('ready', async () => {
     client.user.setActivity(displayText, { type: 2 });
   }, 5000);
   
-  // Очистка варнов при запуске
-  for (const guild of client.guilds.cache.values()) {
-    await cleanExpiredWarns(guild);
-  }
-  
-  // Периодическая очистка варнов
-  setInterval(async () => {
-    for (const guild of client.guilds.cache.values()) {
-      await cleanExpiredWarns(guild);
-    }
-  }, 10 * 60 * 1000);
-  
   try {
     await client.application.commands.set([
       { name: 'ticket_stack1', description: 'Создать сообщение для подачи заявок в СТАК 1 (3500+ часов)' },
       { name: 'ticket_stack2', description: 'Создать сообщение для подачи заявок в СТАК 2 (2500+ часов)' },
       { name: 'stats', description: 'Показать статистику заявок за неделю (только для стаффа)' },
       { name: 'battlemetrics', description: 'Показать BattleMetrics профиль игрока из заявки (только для стаффа)' },
-      { name: 'ping', description: 'Проверить задержку бота' },
-      { name: 'warn', description: 'Выдать предупреждение пользователю' },
-      { name: 'unwarn', description: 'Снять все предупреждения с пользователя' },
-      { name: 'appeal_panel', description: 'Создать панель обжалования/отработки варнов' }
+      { name: 'ping', description: 'Проверить задержку бота' }
     ]);
     
     console.log('✅ Команды зарегистрированы!');
@@ -279,455 +189,6 @@ client.once('ready', async () => {
 
 client.on('interactionCreate', async interaction => {
   const cfg = getConfig();
-  
-  // ========== КОМАНДА /appeal_panel ==========
-  if (interaction.isCommand() && interaction.commandName === 'appeal_panel') {
-    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-      return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
-    }
-    
-    const embed = new EmbedBuilder()
-      .setTitle('📋 ОБЖАЛОВАНИЕ / ОТРАБОТКА ВАРНОВ')
-      .setDescription(
-        '**Если у вас есть активные предупреждения, вы можете:**\n\n' +
-        '📝 **Подать на обжалование** — если считаете варн несправедливым\n' +
-        '✅ **Подать на отработку** — если выполнили условия отработки\n\n' +
-        'Нажмите соответствующую кнопку ниже.'
-      )
-      .setColor(0xFFA500)
-      .setTimestamp();
-    
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('appeal_ticket').setLabel('Обжалование').setEmoji('📝').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('workoff_ticket').setLabel('Отработка').setEmoji('✅').setStyle(ButtonStyle.Success)
-    );
-    
-    await interaction.channel.send({ embeds: [embed], components: [row] });
-    await interaction.reply({ content: '✅ Панель создана!', ephemeral: true });
-  }
-  
-  // ========== КНОПКИ ПАНЕЛИ ОБЖАЛОВАНИЯ ==========
-  if (interaction.isButton() && (interaction.customId === 'appeal_ticket' || interaction.customId === 'workoff_ticket')) {
-    const type = interaction.customId === 'appeal_ticket' ? 'обжалование' : 'отработка';
-    const emoji = interaction.customId === 'appeal_ticket' ? '📝' : '✅';
-    
-    const member = interaction.member;
-    const warnRoles = member.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
-    
-    if (warnRoles.size === 0) {
-      return interaction.reply({ content: '❌ У вас нет активных предупреждений!', ephemeral: true });
-    }
-    
-    const modal = new ModalBuilder()
-      .setCustomId(`appeal_modal_${type}`)
-      .setTitle(`${emoji} ${type === 'обжалование' ? 'Обжалование' : 'Отработка'} варна`);
-    
-    const reasonInput = new TextInputBuilder()
-      .setCustomId('reason')
-      .setLabel(type === 'обжалование' ? 'Почему варн несправедлив?' : 'Что вы сделали для отработки?')
-      .setPlaceholder('Опишите вашу ситуацию...')
-      .setStyle(TextInputStyle.Paragraph)
-      .setRequired(true)
-      .setMaxLength(500);
-    
-    modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
-    
-    await interaction.showModal(modal);
-  }
-  
-  // ========== ОБРАБОТКА МОДАЛЬНОГО ОКНА ОБЖАЛОВАНИЯ/ОТРАБОТКИ ==========
-  if (interaction.isModalSubmit() && interaction.customId.startsWith('appeal_modal_')) {
-    const type = interaction.customId.replace('appeal_modal_', '');
-    const reason = interaction.fields.getTextInputValue('reason');
-    const emoji = type === 'обжалование' ? '📝' : '✅';
-    
-    await interaction.deferReply({ ephemeral: true });
-    
-    try {
-      const user = interaction.user;
-      const member = interaction.member;
-      
-      if (!member) {
-        return await interaction.editReply({ content: '❌ Ошибка: не удалось получить участника.', ephemeral: true });
-      }
-      
-      const warnRoles = member.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
-      
-      const warnsList = warnRoles.map(role => {
-        const roleName = role.name;
-        const reasonMatch = roleName.match(/📝(.+?)(?:\||$)/);
-        const workoffMatch = roleName.match(/🔄(.+?)(?:\||$)/);
-        
-        let displayName = roleName;
-        if (reasonMatch) {
-          displayName += `\n   └ 📝 **Причина:** ${reasonMatch[1].trim()}`;
-        }
-        if (workoffMatch) {
-          displayName += `\n   └ 🔄 **Отработка:** ${workoffMatch[1].trim()}`;
-        }
-        return `- ${displayName}`;
-      }).join('\n\n');
-      
-      console.log(`📝 Создание канала обжалования для ${user.tag}`);
-      
-      // Создаём канал
-      const appealChannel = await interaction.guild.channels.create({
-        name: `${emoji}-${type}-${user.username}`,
-        type: ChannelType.GuildText
-      });
-      
-      console.log(`✅ Канал создан: ${appealChannel.name}`);
-      
-      // Настройка прав
-      await appealChannel.permissionOverwrites.edit(interaction.guild.id, { ViewChannel: false });
-      await appealChannel.permissionOverwrites.edit(user.id, { ViewChannel: true, SendMessages: true });
-      
-      if (cfg.staffRoleId_stack1) {
-        await appealChannel.permissionOverwrites.edit(cfg.staffRoleId_stack1, { ViewChannel: true, SendMessages: true });
-      }
-      if (cfg.staffRoleId_stack2) {
-        await appealChannel.permissionOverwrites.edit(cfg.staffRoleId_stack2, { ViewChannel: true, SendMessages: true });
-      }
-      
-      // Отправка сообщения
-      const embed = new EmbedBuilder()
-        .setTitle(`${emoji} ${type === 'обжалование' ? 'ОБЖАЛОВАНИЕ' : 'ОТРАБОТКА'} ВАРНА`)
-        .setColor(0xFFA500)
-        .setDescription(
-          `**Пользователь:** <@${user.id}>\n\n` +
-          `**Активные варны:**\n${warnsList || 'Нет активных варнов'}\n\n` +
-          `**${type === 'обжалование' ? 'Причина обжалования' : 'Что сделано'}:**\n> ${reason}`
-        )
-        .setTimestamp();
-      
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`remove_warn_${user.id}_${appealChannel.id}`).setLabel('Снять варн').setEmoji('✅').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`close_appeal_${appealChannel.id}`).setLabel('Закрыть').setEmoji('🔒').setStyle(ButtonStyle.Secondary)
-      );
-      
-      let content = '';
-      if (cfg.staffRoleId_stack1) content += `<@&${cfg.staffRoleId_stack1}> `;
-      if (cfg.staffRoleId_stack2) content += `<@&${cfg.staffRoleId_stack2}>`;
-      if (!content) content = 'Стафф';
-      
-      await appealChannel.send({ content, embeds: [embed], components: [row] });
-      
-      await interaction.editReply({ 
-        content: `✅ Ваше обращение создано! Ожидайте в канале ${appealChannel}`,
-        ephemeral: true 
-      });
-      
-    } catch (error) {
-      console.error('❌ Ошибка создания обращения:', error);
-      await interaction.editReply({ content: `❌ Произошла ошибка: ${error.message}`, ephemeral: true });
-    }
-  }
-  
-  // ========== КНОПКА "СНЯТЬ ВАРН" ==========
-  if (interaction.isButton() && interaction.customId.startsWith('remove_warn_')) {
-    const parts = interaction.customId.split('_');
-    const userId = parts[2];
-    const channelId = parts[3];
-    
-    const hasStaffRole = (cfg.staffRoleId_stack1 && interaction.member.roles.cache.has(cfg.staffRoleId_stack1)) || 
-                         (cfg.staffRoleId_stack2 && interaction.member.roles.cache.has(cfg.staffRoleId_stack2)) ||
-                         interaction.member.permissions.has(PermissionFlagsBits.Administrator);
-    
-    if (!hasStaffRole) {
-      return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
-    }
-    
-    await interaction.deferReply({ ephemeral: true });
-    
-    try {
-      const member = await interaction.guild.members.fetch(userId).catch(() => null);
-      if (!member) {
-        return interaction.editReply('❌ Пользователь не найден!');
-      }
-      
-      const removedCount = await removeAllWarns(member);
-      
-      if (removedCount === 0) {
-        return interaction.editReply(`ℹ️ У ${member.user.tag} нет активных предупреждений.`);
-      }
-      
-      const originalEmbed = interaction.message.embeds[0];
-      const newEmbed = EmbedBuilder.from(originalEmbed)
-        .setColor(0x00FF00)
-        .setFooter({ text: `✅ Варны сняты модератором ${interaction.user.tag}` });
-      
-      await interaction.message.edit({ embeds: [newEmbed], components: [] });
-      
-      await interaction.editReply({ content: `✅ Снято ${removedCount} варнов с ${member.user.tag}!`, ephemeral: true });
-      
-      await interaction.channel.send(`✅ **Варны сняты!** Модератор: <@${interaction.user.id}>`);
-      
-      const logEmbed = new EmbedBuilder()
-        .setTitle('✅ Варны сняты')
-        .setColor(0x00FF00)
-        .addFields(
-          { name: '👤 Пользователь', value: `<@${member.id}> (${member.user.tag})`, inline: true },
-          { name: '👮 Модератор', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
-          { name: '📊 Количество', value: `${removedCount}`, inline: true }
-        )
-        .setTimestamp();
-      
-      await sendLog(interaction.guild.id, logEmbed);
-      
-      try {
-        await member.send({
-          embeds: [new EmbedBuilder().setTitle('✅ Предупреждения сняты').setColor(0x00FF00).setDescription(`**Модератор:** ${interaction.user.tag}\n**Снято варнов:** ${removedCount}`)]
-        });
-      } catch (error) {}
-      
-      setTimeout(async () => {
-        try { await interaction.channel.delete(); } catch (error) {}
-      }, 5000);
-      
-    } catch (error) {
-      console.error('❌ Ошибка снятия варна:', error);
-      await interaction.editReply('❌ Произошла ошибка!');
-    }
-  }
-  
-  // ========== КНОПКА "ЗАКРЫТЬ" ==========
-  if (interaction.isButton() && interaction.customId.startsWith('close_appeal_')) {
-    const channelId = interaction.customId.replace('close_appeal_', '');
-    
-    const hasStaffRole = (cfg.staffRoleId_stack1 && interaction.member.roles.cache.has(cfg.staffRoleId_stack1)) || 
-                         (cfg.staffRoleId_stack2 && interaction.member.roles.cache.has(cfg.staffRoleId_stack2)) ||
-                         interaction.member.permissions.has(PermissionFlagsBits.Administrator);
-    
-    if (!hasStaffRole) {
-      return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
-    }
-    
-    await interaction.reply({ content: '🔒 Закрываю...', ephemeral: true });
-    
-    setTimeout(async () => {
-      try {
-        const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
-        if (channel) await channel.delete();
-      } catch (error) {}
-    }, 2000);
-  }
-  
-  // ========== КОМАНДА /unwarn ==========
-  if (interaction.isCommand() && interaction.commandName === 'unwarn') {
-    const hasStaffRole = (cfg.staffRoleId_stack1 && interaction.member.roles.cache.has(cfg.staffRoleId_stack1)) || 
-                         (cfg.staffRoleId_stack2 && interaction.member.roles.cache.has(cfg.staffRoleId_stack2)) ||
-                         interaction.member.permissions.has(PermissionFlagsBits.Administrator);
-    
-    if (!hasStaffRole) {
-      return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
-    }
-    
-    const modal = new ModalBuilder().setCustomId('unwarn_modal').setTitle('✅ Снять предупреждения');
-    
-    const userInput = new TextInputBuilder()
-      .setCustomId('user')
-      .setLabel('ID пользователя или @упоминание')
-      .setPlaceholder('Например: 1492902233354797329')
-      .setStyle(TextInputStyle.Short)
-      .setRequired(true);
-    
-    modal.addComponents(new ActionRowBuilder().addComponents(userInput));
-    
-    await interaction.showModal(modal);
-  }
-  
-  // ========== ОБРАБОТКА /unwarn ==========
-  if (interaction.isModalSubmit() && interaction.customId === 'unwarn_modal') {
-    const userInput = interaction.fields.getTextInputValue('user');
-    
-    await interaction.deferReply({ ephemeral: true });
-    
-    try {
-      let userId = userInput;
-      const mentionMatch = userInput.match(/<@!?(\d+)>/);
-      if (mentionMatch) userId = mentionMatch[1];
-      
-      const member = await interaction.guild.members.fetch(userId).catch(() => null);
-      if (!member) return interaction.editReply('❌ Пользователь не найден!');
-      
-      const removedCount = await removeAllWarns(member);
-      
-      if (removedCount === 0) {
-        return interaction.editReply(`ℹ️ У ${member.user.tag} нет активных предупреждений.`);
-      }
-      
-      const embed = new EmbedBuilder()
-        .setTitle('✅ Предупреждения сняты')
-        .setColor(0x00FF00)
-        .setDescription(`**Пользователь:** <@${member.id}>\n**Модератор:** <@${interaction.user.id}>\n**Снято варнов:** ${removedCount}`)
-        .setTimestamp();
-      
-      await interaction.editReply({ embeds: [embed] });
-      
-      const logEmbed = new EmbedBuilder()
-        .setTitle('✅ Варны сняты (команда)')
-        .setColor(0x00FF00)
-        .addFields(
-          { name: '👤 Пользователь', value: `<@${member.id}> (${member.user.tag})`, inline: true },
-          { name: '👮 Модератор', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
-          { name: '📊 Количество', value: `${removedCount}`, inline: true }
-        )
-        .setTimestamp();
-      
-      await sendLog(interaction.guild.id, logEmbed);
-      
-      try {
-        await member.send({
-          embeds: [new EmbedBuilder().setTitle('✅ Предупреждения сняты').setColor(0x00FF00).setDescription(`**Модератор:** ${interaction.user.tag}\n**Снято варнов:** ${removedCount}`)]
-        });
-      } catch (error) {}
-      
-    } catch (error) {
-      console.error('❌ Ошибка снятия варнов:', error);
-      await interaction.editReply('❌ Произошла ошибка!');
-    }
-  }
-  
-  // ========== КОМАНДА /warn ==========
-  if (interaction.isCommand() && interaction.commandName === 'warn') {
-    const hasStaffRole = (cfg.staffRoleId_stack1 && interaction.member.roles.cache.has(cfg.staffRoleId_stack1)) || 
-                         (cfg.staffRoleId_stack2 && interaction.member.roles.cache.has(cfg.staffRoleId_stack2)) ||
-                         interaction.member.permissions.has(PermissionFlagsBits.Administrator);
-    
-    if (!hasStaffRole) {
-      return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
-    }
-    
-    const modal = new ModalBuilder().setCustomId('warn_modal').setTitle('⚠️ Выдать предупреждение');
-    
-    const userInput = new TextInputBuilder()
-      .setCustomId('user')
-      .setLabel('ID пользователя или @упоминание')
-      .setPlaceholder('Например: 1492902233354797329')
-      .setStyle(TextInputStyle.Short)
-      .setRequired(true);
-    
-    const durationInput = new TextInputBuilder()
-      .setCustomId('duration')
-      .setLabel('Срок: 7, 14, 30 или forever')
-      .setPlaceholder('7, 14, 30, forever')
-      .setStyle(TextInputStyle.Short)
-      .setRequired(true)
-      .setMaxLength(10);
-    
-    const reasonInput = new TextInputBuilder()
-      .setCustomId('reason')
-      .setLabel('Причина')
-      .setPlaceholder('Нарушение правил...')
-      .setStyle(TextInputStyle.Paragraph)
-      .setRequired(true)
-      .setMaxLength(500);
-    
-    const workoffInput = new TextInputBuilder()
-      .setCustomId('workoff')
-      .setLabel('Отработка (необязательно)')
-      .setPlaceholder('Например: Принести 1000 серы')
-      .setStyle(TextInputStyle.Paragraph)
-      .setRequired(false)
-      .setMaxLength(200);
-    
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(userInput),
-      new ActionRowBuilder().addComponents(durationInput),
-      new ActionRowBuilder().addComponents(reasonInput),
-      new ActionRowBuilder().addComponents(workoffInput)
-    );
-    
-    await interaction.showModal(modal);
-  }
-  
-  // ========== ОБРАБОТКА /warn ==========
-  if (interaction.isModalSubmit() && interaction.customId === 'warn_modal') {
-    const userInput = interaction.fields.getTextInputValue('user');
-    const durationInput = interaction.fields.getTextInputValue('duration').toLowerCase();
-    const reason = interaction.fields.getTextInputValue('reason');
-    const workoff = interaction.fields.getTextInputValue('workoff') || null;
-    
-    await interaction.deferReply({ ephemeral: true });
-    
-    let durationDays = 0;
-    let isForever = false;
-    let durationText = '';
-    
-    if (durationInput === 'forever' || durationInput === 'навсегда') {
-      isForever = true;
-      durationText = 'навсегда';
-    } else {
-      durationDays = parseInt(durationInput);
-      if (isNaN(durationDays) || ![7, 14, 30].includes(durationDays)) {
-        return interaction.editReply('❌ Неверный срок! Укажите: 7, 14, 30 или forever');
-      }
-      durationText = `${durationDays}д`;
-    }
-    
-    try {
-      let userId = userInput;
-      const mentionMatch = userInput.match(/<@!?(\d+)>/);
-      if (mentionMatch) userId = mentionMatch[1];
-      
-      const member = await interaction.guild.members.fetch(userId).catch(() => null);
-      if (!member) return interaction.editReply('❌ Пользователь не найден!');
-      
-      const today = new Date();
-      const dateStr = `${today.getDate().toString().padStart(2, '0')}.${(today.getMonth()+1).toString().padStart(2, '0')}.${today.getFullYear()}`;
-      
-      let roleName = isForever ? `⚠️ Warn (навсегда)` : `⚠️ Warn (${dateStr}) [${durationDays}д]`;
-      if (reason) roleName += ` | 📝 ${reason}`;
-      if (workoff) roleName += ` | 🔄 ${workoff}`;
-      
-      let warnRole = interaction.guild.roles.cache.find(r => r.name === roleName);
-      if (!warnRole) {
-        warnRole = await interaction.guild.roles.create({
-          name: roleName,
-          color: 0xFFA500,
-          reason: `Варн для ${member.user.tag}`
-        });
-      }
-      
-      await member.roles.add(warnRole);
-      
-      let description = `**Пользователь:** <@${member.id}>\n**Модератор:** <@${interaction.user.id}>\n**Причина:** ${reason}\n**Срок:** ${durationText}`;
-      if (!isForever) description += `\n**Дата выдачи:** ${dateStr}`;
-      if (workoff) description += `\n**Отработка:** ${workoff}`;
-      
-      const embed = new EmbedBuilder().setTitle('⚠️ Предупреждение выдано').setColor(0xFFA500).setDescription(description).setTimestamp();
-      await interaction.editReply({ embeds: [embed] });
-      
-      const logEmbed = new EmbedBuilder()
-        .setTitle('⚠️ Выдан варн')
-        .setColor(0xFFA500)
-        .addFields(
-          { name: '👤 Пользователь', value: `<@${member.id}> (${member.user.tag})`, inline: true },
-          { name: '👮 Модератор', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
-          { name: '⏰ Срок', value: durationText, inline: true },
-          { name: '📝 Причина', value: reason, inline: false }
-        )
-        .setTimestamp();
-      
-      if (workoff) logEmbed.addFields({ name: '🔄 Отработка', value: workoff, inline: false });
-      
-      await sendLog(interaction.guild.id, logEmbed);
-      
-      let dmDescription = `**Причина:** ${reason}\n**Модератор:** ${interaction.user.tag}\n**Срок:** ${durationText}`;
-      if (workoff) dmDescription += `\n\n**Отработка:** ${workoff}`;
-      if (!isForever) dmDescription += `\n\nРоль будет автоматически снята через ${durationDays} дней.`;
-      
-      try {
-        await member.send({
-          embeds: [new EmbedBuilder().setTitle('⚠️ Вы получили предупреждение').setColor(0xFFA500).setDescription(dmDescription)]
-        });
-      } catch (error) {}
-      
-    } catch (error) {
-      console.error('❌ Ошибка выдачи варна:', error);
-      await interaction.editReply('❌ Произошла ошибка!');
-    }
-  }
   
   // ========== КОМАНДА /ping ==========
   if (interaction.isCommand() && interaction.commandName === 'ping') {
@@ -841,7 +302,7 @@ client.on('interactionCreate', async interaction => {
     await interaction.showModal(modal);
   }
   
-  // ========== ОБРАБОТКА АНКЕТЫ ТИКЕТА (ИСПРАВЛЕНО: СТАФФ ВИДИТ КАНАЛ) ==========
+  // ========== ОБРАБОТКА АНКЕТЫ ТИКЕТА ==========
   if (interaction.isModalSubmit() && interaction.customId.startsWith('app_')) {
     const stack = interaction.customId.replace('app_', '');
     const name = interaction.fields.getTextInputValue('name');
@@ -867,13 +328,11 @@ client.on('interactionCreate', async interaction => {
     try {
       const staffRole = stack === 'stack1' ? cfg.staffRoleId_stack1 : cfg.staffRoleId_stack2;
       
-      // Создаём канал с правильными правами
       const permissionOverwrites = [
-        { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] }, // @everyone не видит
-        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] } // Заявитель видит
+        { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
       ];
       
-      // Добавляем права для стаффа
       if (staffRole) {
         permissionOverwrites.push({
           id: staffRole,
@@ -887,7 +346,6 @@ client.on('interactionCreate', async interaction => {
         permissionOverwrites: permissionOverwrites
       };
       
-      // Добавляем категорию если есть
       if (cfg.ticketCategory) {
         try {
           const category = await interaction.guild.channels.fetch(cfg.ticketCategory).catch(() => null);
