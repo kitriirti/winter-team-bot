@@ -183,6 +183,7 @@ async function sendLog(guildId, embed) {
     console.error('❌ [DEBUG] Ошибка отправки лога:', error);
   }
 }
+
 function scheduleAutoDelete(channelId, ticketId) {
   const timeout = setTimeout(async () => {
     try {
@@ -352,10 +353,8 @@ client.on('interactionCreate', async interaction => {
       
       const warnRoles = member.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
       
-      // Формируем красивый список варнов с причинами и отработками
       const warnsList = warnRoles.map(role => {
         const roleName = role.name;
-        // Пробуем извлечь причину и отработку из названия роли
         const reasonMatch = roleName.match(/📝(.+?)(?:\||$)/);
         const workoffMatch = roleName.match(/🔄(.+?)(?:\||$)/);
         
@@ -677,7 +676,6 @@ client.on('interactionCreate', async interaction => {
       const today = new Date();
       const dateStr = `${today.getDate().toString().padStart(2, '0')}.${(today.getMonth()+1).toString().padStart(2, '0')}.${today.getFullYear()}`;
       
-      // Формируем название роли с причиной и отработкой
       let roleName = isForever ? `⚠️ Warn (навсегда)` : `⚠️ Warn (${dateStr}) [${durationDays}д]`;
       if (reason) roleName += ` | 📝 ${reason}`;
       if (workoff) roleName += ` | 🔄 ${workoff}`;
@@ -843,7 +841,7 @@ client.on('interactionCreate', async interaction => {
     await interaction.showModal(modal);
   }
   
-  // ========== ОБРАБОТКА АНКЕТЫ ТИКЕТА ==========
+  // ========== ОБРАБОТКА АНКЕТЫ ТИКЕТА (ИСПРАВЛЕНО: СТАФФ ВИДИТ КАНАЛ) ==========
   if (interaction.isModalSubmit() && interaction.customId.startsWith('app_')) {
     const stack = interaction.customId.replace('app_', '');
     const name = interaction.fields.getTextInputValue('name');
@@ -869,27 +867,32 @@ client.on('interactionCreate', async interaction => {
     try {
       const staffRole = stack === 'stack1' ? cfg.staffRoleId_stack1 : cfg.staffRoleId_stack2;
       
+      // Создаём канал с правильными правами
+      const permissionOverwrites = [
+        { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] }, // @everyone не видит
+        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] } // Заявитель видит
+      ];
+      
+      // Добавляем права для стаффа
+      if (staffRole) {
+        permissionOverwrites.push({
+          id: staffRole,
+          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]
+        });
+      }
+      
       const channelOptions = {
         name: `${stack === 'stack1' ? '🔥' : '💧'}｜${stack === 'stack1' ? 'СТАК-1' : 'СТАК-2'}｜${interaction.user.username}`,
         type: ChannelType.GuildText,
-        permissionOverwrites: [
-          { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-          { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
-        ]
+        permissionOverwrites: permissionOverwrites
       };
       
+      // Добавляем категорию если есть
       if (cfg.ticketCategory) {
         try {
           const category = await interaction.guild.channels.fetch(cfg.ticketCategory).catch(() => null);
           if (category) channelOptions.parent = cfg.ticketCategory;
         } catch (error) {}
-      }
-      
-      if (staffRole) {
-        channelOptions.permissionOverwrites.push({
-          id: staffRole,
-          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]
-        });
       }
       
       const channel = await interaction.guild.channels.create(channelOptions);
@@ -916,6 +919,7 @@ client.on('interactionCreate', async interaction => {
       
       await channel.send({ content, embeds: [embed], components: [row] });
       await interaction.editReply({ content: `✅ Заявка создана: ${channel}` });
+      
     } catch (error) {
       console.error('❌ Ошибка создания тикета:', error);
       await interaction.editReply('❌ Ошибка создания!');
