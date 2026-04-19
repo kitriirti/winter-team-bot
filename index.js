@@ -20,19 +20,18 @@ const client = new Client({
   partials: ['CHANNEL', 'MESSAGE']
 });
 
-const activeTickets = new Collection();
-const autoDeleteTimeouts = new Collection();
+const activeTickets = new Collection(); // ticketId -> { channelId, userId, stackType, status, createdAt }
+const autoDeleteTimeouts = new Collection(); // ticketId -> timeout
 const pendingSends = new Collection();
 
-// Статистика стаффа (кто сколько принял)
-let staffStats = new Collection(); // userId -> { accepted: 0, tag: '' }
+// Статистика стаффа
+let staffStats = new Collection();
 
-// Загрузка статистики стаффа из переменной окружения
 try {
   if (process.env.STAFF_STATS) {
     const data = JSON.parse(process.env.STAFF_STATS);
     staffStats = new Collection(Object.entries(data));
-    console.log('✅ Статистика стаффа загружена из переменной');
+    console.log('✅ Статистика стаффа загружена');
   }
 } catch (error) {
   console.error('❌ Ошибка загрузки статистики стаффа:', error);
@@ -48,7 +47,6 @@ function saveStaffStats() {
   }
 }
 
-// Функция обновления роли стаффа
 async function updateStaffRole(guild, staffId, acceptedCount) {
   try {
     const member = await guild.members.fetch(staffId).catch(() => null);
@@ -56,17 +54,14 @@ async function updateStaffRole(guild, staffId, acceptedCount) {
     
     const roleName = `📋 Принял ${acceptedCount} заявок`;
     
-    // Удаляем старые роли
     const oldRoles = member.roles.cache.filter(r => r.name.startsWith('📋 Принял '));
     for (const role of oldRoles.values()) {
       await member.roles.remove(role).catch(() => {});
-      // Если роль пустая - удаляем
       if (role.members.size === 1) {
         await role.delete().catch(() => {});
       }
     }
     
-    // Создаём или находим новую роль
     let newRole = guild.roles.cache.find(r => r.name === roleName);
     if (!newRole) {
       newRole = await guild.roles.create({
@@ -173,21 +168,85 @@ async function sendLog(guild, embed) {
   }
 }
 
-function scheduleAutoDelete(channelId, ticketId) {
+// Планирование авто-удаления неактивного тикета (48 часов)
+function scheduleInactiveDelete(channelId, ticketId) {
   const timeout = setTimeout(async () => {
     try {
       const channel = await client.channels.fetch(channelId).catch(() => null);
       if (channel) {
-        await channel.send('🗑️ **Тикет автоматически закрыт (прошло 7 дней).**');
-        setTimeout(async () => {
-          try { await channel.delete(); } catch (error) {}
-        }, 5000);
+        // Проверяем, есть ли сообщения после создания канала
+        const messages = await channel.messages.fetch({ limit: 5 });
+        const botMessages = messages.filter(m => m.author.id === client.user.id);
+        
+        // Если только сообщение бота о создании тикета - удаляем
+        if (messages.size <= 1 || (messages.size === 2 && botMessages.size >= 1)) {
+          await channel.send('🗑️ **Тикет автоматически закрыт (неактивность 48 часов).**');
+          setTimeout(async () => {
+            try { await channel.delete(); } catch (error) {}
+          }, 5000);
+        }
       }
       activeTickets.delete(ticketId);
       autoDeleteTimeouts.delete(ticketId);
-    } catch (error) {}
-  }, 7 * 24 * 60 * 60 * 1000);
+    } catch (error) {
+      console.error('❌ Ошибка авто-удаления неактивного тикета:', error);
+    }
+  }, 48 * 60 * 60 * 1000); // 48 часов
+  
   autoDeleteTimeouts.set(ticketId, timeout);
+}
+
+// Проверка всех каналов при запуске
+async function cleanupOldChannels(guild) {
+  const cfg = getConfig();
+  if (!cfg.ticketCategory) return;
+  
+  const category = await guild.channels.fetch(cfg.ticketCategory).catch(() => null);
+  if (!category) return;
+  
+  const now = Date.now();
+  const inactiveThreshold = 48 * 60 * 60 * 1000; // 48 часов
+  
+  for (const channel of category.children.cache.values()) {
+    if (!channel.isTextBased()) continue;
+    
+    // Проверяем, является ли канал тикетом
+    if (!channel.name.startsWith('🔥｜') && !channel.name.startsWith('💧｜')) continue;
+    
+    try {
+      const messages = await channel.messages.fetch({ limit: 5 });
+      
+      // Если канал пустой или только сообщения бота
+      if (messages.size === 0) {
+        await channel.delete().catch(() => {});
+        console.log(`🗑️ Удалён пустой канал: ${channel.name}`);
+        continue;
+      }
+      
+      // Проверяем дату последнего сообщения
+      const lastMessage = messages.first();
+      if (lastMessage) {
+        const timeSinceLastMessage = now - lastMessage.createdTimestamp;
+        
+        // Если прошло больше 48 часов и нет активности
+        if (timeSinceLastMessage > inactiveThreshold) {
+          const humanMessages = messages.filter(m => !m.author.bot);
+          
+          if (humanMessages.size === 0) {
+            await channel.send('🗑️ **Тикет автоматически закрыт (неактивность 48 часов).**');
+            setTimeout(async () => {
+              try { await channel.delete(); } catch (error) {}
+            }, 5000);
+            console.log(`🗑️ Удалён неактивный канал: ${channel.name}`);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`❌ Ошибка проверки канала ${channel.name}:`, error);
+    }
+  }
+  
+  console.log('✅ Проверка старых каналов завершена');
 }
 
 async function createTicketMessage(channel, stackType) {
@@ -215,7 +274,6 @@ async function createTicketMessage(channel, stackType) {
   return await channel.send({ embeds: [embed], components: [row] });
 }
 
-// Время запуска бота
 const startTime = Date.now();
 
 function getUptime() {
@@ -233,9 +291,7 @@ function getUptime() {
 
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} запущен!`);
-  console.log(`📊 Серверов: ${client.guilds.cache.size}`);
   
-  // Статус с аптаймом
   setInterval(() => {
     client.user.setActivity(`❤️ ${getUptime()}`, { type: 3 });
   }, 60000);
@@ -245,12 +301,14 @@ client.once('ready', async () => {
   const cfg = getConfig();
   const guild = client.guilds.cache.get(cfg.guildId);
   
-  // Восстановление ролей стаффа при запуске
   if (guild) {
+    // Восстановление ролей стаффа
     for (const [staffId, data] of staffStats) {
       await updateStaffRole(guild, staffId, data.accepted);
     }
-    console.log('✅ Роли стаффа восстановлены');
+    
+    // Очистка старых забагованных каналов
+    await cleanupOldChannels(guild);
   }
   
   try {
@@ -262,11 +320,11 @@ client.once('ready', async () => {
       { name: 'ping', description: 'Проверить задержку бота' },
       {
         name: 'send',
-        description: 'Отправить сообщение от имени бота в канал (поддерживает # ## ###)',
+        description: 'Отправить сообщение от имени бота в канал',
         options: [
           { name: 'channel', description: 'Канал для отправки', type: 7, required: true },
-          { name: 'text', description: 'Текст сообщения (можно # Заголовок)', type: 3, required: false },
-          { name: 'name', description: 'Имя отправителя (по умолч. Winter Team)', type: 3, required: false },
+          { name: 'text', description: 'Текст сообщения', type: 3, required: false },
+          { name: 'name', description: 'Имя отправителя', type: 3, required: false },
           { name: 'avatar', description: 'Ссылка на аватарку', type: 3, required: false }
         ]
       }
@@ -319,10 +377,8 @@ client.on('interactionCreate', async interaction => {
     
     pendingSends.set(interaction.user.id, sendData);
     
-    const previewText = text || '(без текста)';
-    
     await interaction.reply({
-      content: `📤 **Отправка в ${channel}**\nИмя: **${customName}**\n\n**Превью:**\n${previewText}\n\nНажмите кнопку ниже:`,
+      content: `📤 **Отправка в ${channel}**\nИмя: **${customName}**\n\n**Превью:**\n${text || '(без текста)'}\n\nНажмите кнопку ниже:`,
       components: [row],
       ephemeral: true
     });
@@ -365,19 +421,15 @@ client.on('interactionCreate', async interaction => {
     
     const totalWeekAccepted = stats.stack1.weekAccepted + stats.stack2.weekAccepted;
     const totalWeekDenied = stats.stack1.weekDenied + stats.stack2.weekDenied;
-    const totalWeek = totalWeekAccepted + totalWeekDenied;
     const totalAutoDenied = (stats.stack1.autoDenied || 0) + (stats.stack2.autoDenied || 0);
     
     const sortedStaff = [...staffStats.entries()]
       .sort((a, b) => b[1].accepted - a[1].accepted)
       .slice(0, 10);
     
-    let staffList = '';
-    if (sortedStaff.length > 0) {
-      staffList = sortedStaff.map(([id, data]) => `<@${id}> — **${data.accepted}**`).join('\n');
-    } else {
-      staffList = 'Нет данных';
-    }
+    let staffList = sortedStaff.length > 0 
+      ? sortedStaff.map(([id, data]) => `<@${id}> — **${data.accepted}**`).join('\n')
+      : 'Нет данных';
     
     const embed = new EmbedBuilder()
       .setTitle('📊 СТАТИСТИКА ЗА НЕДЕЛЮ')
@@ -474,7 +526,7 @@ client.on('interactionCreate', async interaction => {
         .setTitle('🤖 Заявка отклонена автоматически')
         .setColor(0xFF0000)
         .addFields(
-          { name: '👤 Заявитель', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
+          { name: '👤 Заявитель', value: `<@${interaction.user.id}>`, inline: true },
           { name: '📋 Состав', value: stack === 'stack1' ? 'СТАК 1' : 'СТАК 2', inline: true },
           { name: '⏰ Часы', value: `${hours} / ${minHours}`, inline: true }
         )
@@ -516,7 +568,9 @@ client.on('interactionCreate', async interaction => {
       
       const ticketId = `${interaction.user.id}_${stack}`;
       activeTickets.set(ticketId, { channelId: channel.id, userId: interaction.user.id, stackType: stack, status: 'pending', createdAt: Date.now() });
-      scheduleAutoDelete(channel.id, ticketId);
+      
+      // Таймер на 48 часов неактивности
+      scheduleInactiveDelete(channel.id, ticketId);
       
       const embed = new EmbedBuilder()
         .setColor(0x3498DB)
@@ -582,7 +636,7 @@ client.on('interactionCreate', async interaction => {
           .setColor(0x808080)
           .addFields(
             { name: '📁 Канал', value: channel.name, inline: true },
-            { name: '👮 Стафф', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true }
+            { name: '👮 Стафф', value: `<@${interaction.user.id}>`, inline: true }
           )
           .setTimestamp();
         
@@ -592,7 +646,6 @@ client.on('interactionCreate', async interaction => {
     
     if (id.startsWith('accept_') || id.startsWith('consider_') || id.startsWith('call_') || id.startsWith('deny_')) {
       const [action, userId, stack] = id.split('_');
-      const staffRole = stack === 'stack1' ? cfg.staffRoleId_stack1 : cfg.staffRoleId_stack2;
       
       if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
       
@@ -606,7 +659,6 @@ client.on('interactionCreate', async interaction => {
         else { stats.stack2.accepted++; stats.stack2.weekAccepted++; }
         saveStats();
         
-        // Обновляем статистику стаффа
         const staffId = interaction.user.id;
         if (!staffStats.has(staffId)) {
           staffStats.set(staffId, { accepted: 0, tag: interaction.user.tag });
@@ -615,7 +667,6 @@ client.on('interactionCreate', async interaction => {
         staffStats.get(staffId).tag = interaction.user.tag;
         saveStaffStats();
         
-        // Обновляем роль стаффа
         await updateStaffRole(interaction.guild, staffId, staffStats.get(staffId).accepted);
         
         if (cfg.memberRoleId) {
@@ -625,13 +676,12 @@ client.on('interactionCreate', async interaction => {
         await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0x00FF00)], components: [] });
         await interaction.channel.send(`<@${userId}> 🎉 Заявка принята!`);
         
-        // Удаление через 30 минут
         setTimeout(() => interaction.channel.delete().catch(() => {}), 30 * 60 * 1000);
         await interaction.channel.send(`⏰ **Этот канал будет автоматически удалён через 30 минут.**`);
         
         logEmbed.setTitle('✅ Заявка принята').setColor(0x00FF00).addFields(
           { name: '👤 Заявитель', value: `<@${userId}>`, inline: true },
-          { name: '👮 Стафф', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
+          { name: '👮 Стафф', value: `<@${interaction.user.id}>`, inline: true },
           { name: '📋 Состав', value: stack === 'stack1' ? 'СТАК 1' : 'СТАК 2', inline: true },
           { name: '📊 Всего принято', value: `${staffStats.get(staffId).accepted}`, inline: true }
         );
@@ -642,7 +692,7 @@ client.on('interactionCreate', async interaction => {
         
         logEmbed.setTitle('⏳ Заявка на рассмотрении').setColor(0xFFA500).addFields(
           { name: '👤 Заявитель', value: `<@${userId}>`, inline: true },
-          { name: '👮 Стафф', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
+          { name: '👮 Стафф', value: `<@${interaction.user.id}>`, inline: true },
           { name: '📋 Состав', value: stack === 'stack1' ? 'СТАК 1' : 'СТАК 2', inline: true }
         );
         
@@ -654,7 +704,7 @@ client.on('interactionCreate', async interaction => {
         
         logEmbed.setTitle('📞 Обзвон').setColor(0x808080).addFields(
           { name: '👤 Заявитель', value: `<@${userId}>`, inline: true },
-          { name: '👮 Стафф', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
+          { name: '👮 Стафф', value: `<@${interaction.user.id}>`, inline: true },
           { name: '📋 Состав', value: stack === 'stack1' ? 'СТАК 1' : 'СТАК 2', inline: true }
         );
         
@@ -680,7 +730,7 @@ client.on('interactionCreate', async interaction => {
       if (action !== 'deny') await sendLog(interaction.guild, logEmbed);
     }
     
-    // === КНОПКИ /send ===
+    // Кнопки /send
     if (id.startsWith('send_photo_')) {
       const userId = id.replace('send_photo_', '');
       if (interaction.user.id !== userId) {
@@ -689,7 +739,7 @@ client.on('interactionCreate', async interaction => {
       
       const sendData = pendingSends.get(userId);
       if (!sendData) {
-        return interaction.reply({ content: '❌ Данные не найдены! Вызовите /send заново.', ephemeral: true });
+        return interaction.reply({ content: '❌ Данные не найдены!', ephemeral: true });
       }
       
       const modal = new ModalBuilder().setCustomId(`send_modal_${userId}`).setTitle('📷 Прикрепить фото');
@@ -791,7 +841,7 @@ client.on('interactionCreate', async interaction => {
         .setColor(0xFF0000)
         .addFields(
           { name: '👤 Заявитель', value: `<@${userId}>`, inline: true },
-          { name: '👮 Стафф', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
+          { name: '👮 Стафф', value: `<@${interaction.user.id}>`, inline: true },
           { name: '📋 Состав', value: stack === 'stack1' ? 'СТАК 1' : 'СТАК 2', inline: true },
           { name: '📝 Причина', value: reason, inline: false }
         )
@@ -805,7 +855,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
   
-  // ========== ОБРАБОТКА МОДАЛЬНОГО ОКНА ДЛЯ /send ==========
+  // ========== ОБРАБОТКА ФОТО ДЛЯ /send ==========
   if (interaction.isModalSubmit() && interaction.customId.startsWith('send_modal_')) {
     const userId = interaction.customId.replace('send_modal_', '');
     const photoUrl = interaction.fields.getTextInputValue('photo_url');
@@ -853,11 +903,7 @@ client.on('interactionCreate', async interaction => {
         .setImage(`attachment://${fileName}`)
         .setDescription(sendData.text || null);
       
-      await webhook.send({
-        embeds: [embed],
-        files: files
-      });
-      
+      await webhook.send({ embeds: [embed], files: files });
       await webhook.delete();
       
       pendingSends.delete(userId);
