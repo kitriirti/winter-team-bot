@@ -27,13 +27,12 @@ const pendingSends = new Collection();
 // Статистика стаффа (кто сколько принял)
 let staffStats = new Collection(); // userId -> { accepted: 0, tag: '' }
 
-// Загрузка статистики стаффа
-const staffStatsPath = './staffStats.json';
+// Загрузка статистики стаффа из переменной окружения
 try {
-  if (fs.existsSync(staffStatsPath)) {
-    const data = JSON.parse(fs.readFileSync(staffStatsPath, 'utf8'));
+  if (process.env.STAFF_STATS) {
+    const data = JSON.parse(process.env.STAFF_STATS);
     staffStats = new Collection(Object.entries(data));
-    console.log('✅ Статистика стаффа загружена');
+    console.log('✅ Статистика стаффа загружена из переменной');
   }
 } catch (error) {
   console.error('❌ Ошибка загрузки статистики стаффа:', error);
@@ -42,9 +41,45 @@ try {
 function saveStaffStats() {
   try {
     const obj = Object.fromEntries(staffStats);
-    fs.writeFileSync(staffStatsPath, JSON.stringify(obj, null, 2));
+    const json = JSON.stringify(obj);
+    console.log(`📊 СТАТИСТИКА СТАФФА (скопируй для Render): STAFF_STATS='${json}'`);
   } catch (error) {
     console.error('❌ Ошибка сохранения статистики стаффа:', error);
+  }
+}
+
+// Функция обновления роли стаффа
+async function updateStaffRole(guild, staffId, acceptedCount) {
+  try {
+    const member = await guild.members.fetch(staffId).catch(() => null);
+    if (!member) return;
+    
+    const roleName = `📋 Принял ${acceptedCount} заявок`;
+    
+    // Удаляем старые роли
+    const oldRoles = member.roles.cache.filter(r => r.name.startsWith('📋 Принял '));
+    for (const role of oldRoles.values()) {
+      await member.roles.remove(role).catch(() => {});
+      // Если роль пустая - удаляем
+      if (role.members.size === 1) {
+        await role.delete().catch(() => {});
+      }
+    }
+    
+    // Создаём или находим новую роль
+    let newRole = guild.roles.cache.find(r => r.name === roleName);
+    if (!newRole) {
+      newRole = await guild.roles.create({
+        name: roleName,
+        color: 0x3498DB,
+        reason: `Статистика принятых заявок для ${member.user.tag}`
+      });
+    }
+    
+    await member.roles.add(newRole);
+    console.log(`✅ Роль "${roleName}" выдана ${member.user.tag}`);
+  } catch (error) {
+    console.error('❌ Ошибка обновления роли стаффа:', error);
   }
 }
 
@@ -207,6 +242,17 @@ client.once('ready', async () => {
   
   client.user.setActivity(`❤️ ${getUptime()}`, { type: 3 });
   
+  const cfg = getConfig();
+  const guild = client.guilds.cache.get(cfg.guildId);
+  
+  // Восстановление ролей стаффа при запуске
+  if (guild) {
+    for (const [staffId, data] of staffStats) {
+      await updateStaffRole(guild, staffId, data.accepted);
+    }
+    console.log('✅ Роли стаффа восстановлены');
+  }
+  
   try {
     await client.application.commands.set([
       { name: 'ticket_stack1', description: 'Создать сообщение для подачи заявок в СТАК 1 (3500+ часов)' },
@@ -220,7 +266,7 @@ client.once('ready', async () => {
         options: [
           { name: 'channel', description: 'Канал для отправки', type: 7, required: true },
           { name: 'text', description: 'Текст сообщения (можно # Заголовок)', type: 3, required: false },
-          { name: 'name', description: 'Имя отправителя (по умолч. Winter Team)', type: 3, required:0 },
+          { name: 'name', description: 'Имя отправителя (по умолч. Winter Team)', type: 3, required: false },
           { name: 'avatar', description: 'Ссылка на аватарку', type: 3, required: false }
         ]
       }
@@ -322,7 +368,6 @@ client.on('interactionCreate', async interaction => {
     const totalWeek = totalWeekAccepted + totalWeekDenied;
     const totalAutoDenied = (stats.stack1.autoDenied || 0) + (stats.stack2.autoDenied || 0);
     
-    // Формируем топ стаффа
     const sortedStaff = [...staffStats.entries()]
       .sort((a, b) => b[1].accepted - a[1].accepted)
       .slice(0, 10);
@@ -378,7 +423,6 @@ client.on('interactionCreate', async interaction => {
     
     await interaction.update({ embeds: [embed], components: [row] });
     
-    // ЛОГ
     const logEmbed = new EmbedBuilder()
       .setTitle(ticketStatus[stack] ? '🟢 НАБОР ОТКРЫТ' : '🔴 НАБОР ЗАКРЫТ')
       .setDescription(`**${stack === 'stack1' ? 'СТАК 1' : 'СТАК 2'}** — набор ${ticketStatus[stack] ? 'открыт' : 'закрыт'}`)
@@ -426,7 +470,6 @@ client.on('interactionCreate', async interaction => {
       else { stats.stack2.denied++; stats.stack2.weekDenied++; stats.stack2.autoDenied = (stats.stack2.autoDenied||0)+1; }
       saveStats();
       
-      // ЛОГ
       const logEmbed = new EmbedBuilder()
         .setTitle('🤖 Заявка отклонена автоматически')
         .setColor(0xFF0000)
@@ -494,7 +537,6 @@ client.on('interactionCreate', async interaction => {
       await channel.send({ content, embeds: [embed], components: [row] });
       await interaction.editReply({ content: `✅ Заявка создана: ${channel}` });
       
-      // ЛОГ: создание тикета
       const logEmbed = new EmbedBuilder()
         .setTitle('📝 Новая заявка')
         .setColor(0x3498DB)
@@ -524,11 +566,9 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ content: '🔒 Закрываю...', ephemeral: true });
       const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
       
-      let ticketData = null;
       for (const [tid, t] of activeTickets) {
         if (t.channelId === channelId) {
           clearTimeout(autoDeleteTimeouts.get(tid));
-          ticketData = t;
           activeTickets.delete(tid);
           break;
         }
@@ -536,7 +576,6 @@ client.on('interactionCreate', async interaction => {
       
       setTimeout(() => channel?.delete().catch(() => {}), 2000);
       
-      // ЛОГ: закрытие тикета
       if (channel) {
         const logEmbed = new EmbedBuilder()
           .setTitle('🔒 Тикет закрыт')
@@ -576,26 +615,31 @@ client.on('interactionCreate', async interaction => {
         staffStats.get(staffId).tag = interaction.user.tag;
         saveStaffStats();
         
+        // Обновляем роль стаффа
+        await updateStaffRole(interaction.guild, staffId, staffStats.get(staffId).accepted);
+        
         if (cfg.memberRoleId) {
           await interaction.guild.members.fetch(userId).then(m => m.roles.add(cfg.memberRoleId)).catch(() => {});
         }
         
         await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0x00FF00)], components: [] });
         await interaction.channel.send(`<@${userId}> 🎉 Заявка принята!`);
-        setTimeout(() => interaction.channel.delete(), 60 * 60 * 1000);
         
-        // ЛОГ
+        // Удаление через 30 минут
+        setTimeout(() => interaction.channel.delete().catch(() => {}), 30 * 60 * 1000);
+        await interaction.channel.send(`⏰ **Этот канал будет автоматически удалён через 30 минут.**`);
+        
         logEmbed.setTitle('✅ Заявка принята').setColor(0x00FF00).addFields(
           { name: '👤 Заявитель', value: `<@${userId}>`, inline: true },
           { name: '👮 Стафф', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
-          { name: '📋 Состав', value: stack === 'stack1' ? 'СТАК 1' : 'СТАК 2', inline: true }
+          { name: '📋 Состав', value: stack === 'stack1' ? 'СТАК 1' : 'СТАК 2', inline: true },
+          { name: '📊 Всего принято', value: `${staffStats.get(staffId).accepted}`, inline: true }
         );
         
       } else if (action === 'consider') {
         await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0xFFA500)], components: interaction.message.components });
         await interaction.channel.send(`<@${userId}> Заявка на рассмотрении.`);
         
-        // ЛОГ
         logEmbed.setTitle('⏳ Заявка на рассмотрении').setColor(0xFFA500).addFields(
           { name: '👤 Заявитель', value: `<@${userId}>`, inline: true },
           { name: '👮 Стафф', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
@@ -608,7 +652,6 @@ client.on('interactionCreate', async interaction => {
         const invite = vc ? await vc.createInvite({ maxAge: 86400, maxUses: 1 }).catch(() => null) : null;
         await interaction.channel.send(`<@${userId}> 📞 Обзвон!${invite ? `\n🔊 ${invite.url}` : ''}`);
         
-        // ЛОГ
         logEmbed.setTitle('📞 Обзвон').setColor(0x808080).addFields(
           { name: '👤 Заявитель', value: `<@${userId}>`, inline: true },
           { name: '👮 Стафф', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
@@ -743,7 +786,6 @@ client.on('interactionCreate', async interaction => {
       
       await interaction.editReply({ content: '✅ Заявка отклонена!', ephemeral: true });
       
-      // ЛОГ
       const logEmbed = new EmbedBuilder()
         .setTitle('❌ Заявка отклонена')
         .setColor(0xFF0000)
