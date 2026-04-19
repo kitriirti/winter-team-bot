@@ -20,8 +20,8 @@ const client = new Client({
   partials: ['CHANNEL', 'MESSAGE']
 });
 
-const activeTickets = new Collection(); // ticketId -> { channelId, userId, stackType, status, createdAt }
-const autoDeleteTimeouts = new Collection(); // ticketId -> timeout
+const activeTickets = new Collection();
+const autoDeleteTimeouts = new Collection();
 const pendingSends = new Collection();
 
 // Статистика стаффа
@@ -168,17 +168,14 @@ async function sendLog(guild, embed) {
   }
 }
 
-// Планирование авто-удаления неактивного тикета (48 часов)
 function scheduleInactiveDelete(channelId, ticketId) {
   const timeout = setTimeout(async () => {
     try {
       const channel = await client.channels.fetch(channelId).catch(() => null);
       if (channel) {
-        // Проверяем, есть ли сообщения после создания канала
         const messages = await channel.messages.fetch({ limit: 5 });
         const botMessages = messages.filter(m => m.author.id === client.user.id);
         
-        // Если только сообщение бота о создании тикета - удаляем
         if (messages.size <= 1 || (messages.size === 2 && botMessages.size >= 1)) {
           await channel.send('🗑️ **Тикет автоматически закрыт (неактивность 48 часов).**');
           setTimeout(async () => {
@@ -191,12 +188,11 @@ function scheduleInactiveDelete(channelId, ticketId) {
     } catch (error) {
       console.error('❌ Ошибка авто-удаления неактивного тикета:', error);
     }
-  }, 48 * 60 * 60 * 1000); // 48 часов
+  }, 48 * 60 * 60 * 1000);
   
   autoDeleteTimeouts.set(ticketId, timeout);
 }
 
-// Проверка всех каналов при запуске
 async function cleanupOldChannels(guild) {
   const cfg = getConfig();
   if (!cfg.ticketCategory) return;
@@ -205,30 +201,25 @@ async function cleanupOldChannels(guild) {
   if (!category) return;
   
   const now = Date.now();
-  const inactiveThreshold = 48 * 60 * 60 * 1000; // 48 часов
+  const inactiveThreshold = 48 * 60 * 60 * 1000;
   
   for (const channel of category.children.cache.values()) {
     if (!channel.isTextBased()) continue;
-    
-    // Проверяем, является ли канал тикетом
     if (!channel.name.startsWith('🔥｜') && !channel.name.startsWith('💧｜')) continue;
     
     try {
       const messages = await channel.messages.fetch({ limit: 5 });
       
-      // Если канал пустой или только сообщения бота
       if (messages.size === 0) {
         await channel.delete().catch(() => {});
         console.log(`🗑️ Удалён пустой канал: ${channel.name}`);
         continue;
       }
       
-      // Проверяем дату последнего сообщения
       const lastMessage = messages.first();
       if (lastMessage) {
         const timeSinceLastMessage = now - lastMessage.createdTimestamp;
         
-        // Если прошло больше 48 часов и нет активности
         if (timeSinceLastMessage > inactiveThreshold) {
           const humanMessages = messages.filter(m => !m.author.bot);
           
@@ -302,12 +293,9 @@ client.once('ready', async () => {
   const guild = client.guilds.cache.get(cfg.guildId);
   
   if (guild) {
-    // Восстановление ролей стаффа
     for (const [staffId, data] of staffStats) {
       await updateStaffRole(guild, staffId, data.accepted);
     }
-    
-    // Очистка старых забагованных каналов
     await cleanupOldChannels(guild);
   }
   
@@ -326,6 +314,13 @@ client.once('ready', async () => {
           { name: 'text', description: 'Текст сообщения', type: 3, required: false },
           { name: 'name', description: 'Имя отправителя', type: 3, required: false },
           { name: 'avatar', description: 'Ссылка на аватарку', type: 3, required: false }
+        ]
+      },
+      {
+        name: 'deletechannel',
+        description: 'Удалить канал по ID (только для стаффа)',
+        options: [
+          { name: 'channel_id', description: 'ID канала для удаления', type: 3, required: true }
         ]
       }
     ]);
@@ -346,6 +341,54 @@ client.on('interactionCreate', async interaction => {
   if (interaction.isCommand() && interaction.commandName === 'ping') {
     const sent = await interaction.reply({ content: '🏓 Пинг...', fetchReply: true, ephemeral: true });
     await interaction.editReply({ content: `🏓 Понг! ${sent.createdTimestamp - interaction.createdTimestamp}ms | API: ${client.ws.ping}ms` });
+  }
+  
+  // ========== КОМАНДА /deletechannel ==========
+  if (interaction.isCommand() && interaction.commandName === 'deletechannel') {
+    if (!hasStaff) {
+      return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
+    }
+    
+    const channelId = interaction.options.getString('channel_id');
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
+      
+      if (!channel) {
+        return interaction.editReply({ content: '❌ Канал не найден! Проверьте ID.' });
+      }
+      
+      const channelName = channel.name;
+      
+      for (const [ticketId, ticket] of activeTickets) {
+        if (ticket.channelId === channelId) {
+          clearTimeout(autoDeleteTimeouts.get(ticketId));
+          activeTickets.delete(ticketId);
+          break;
+        }
+      }
+      
+      await channel.delete();
+      
+      await interaction.editReply({ content: `✅ Канал **${channelName}** успешно удалён!` });
+      
+      const logEmbed = new EmbedBuilder()
+        .setTitle('🗑️ Канал удалён вручную')
+        .setColor(0xFF0000)
+        .addFields(
+          { name: '📁 Канал', value: channelName, inline: true },
+          { name: '👮 Стафф', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true }
+        )
+        .setTimestamp();
+      
+      await sendLog(interaction.guild, logEmbed);
+      
+    } catch (error) {
+      console.error('❌ Ошибка удаления канала:', error);
+      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
+    }
   }
   
   // ========== КОМАНДА /send ==========
@@ -569,7 +612,6 @@ client.on('interactionCreate', async interaction => {
       const ticketId = `${interaction.user.id}_${stack}`;
       activeTickets.set(ticketId, { channelId: channel.id, userId: interaction.user.id, stackType: stack, status: 'pending', createdAt: Date.now() });
       
-      // Таймер на 48 часов неактивности
       scheduleInactiveDelete(channel.id, ticketId);
       
       const embed = new EmbedBuilder()
