@@ -15,8 +15,9 @@ const client = new Client({
 });
 
 // ========== ХРАНИЛИЩА В ПАМЯТИ ==========
-const channelDeleteLog = new Collection();
-const deletedChannels = new Collection();
+const channelDeleteLog = new Collection(); // Анти-снос: лог удалений
+const deletedChannels = new Collection(); // Анти-снос: удалённые каналы
+const savedChannels = new Collection(); // Сохранённые каналы (бэкап)
 const activeTickets = new Collection();
 const autoDeleteTimeouts = new Collection();
 let staffStats = new Collection();
@@ -69,12 +70,192 @@ const getConfig = () => {
   };
 };
 
+// ========== СОХРАНЕНИЕ ВСЕХ КАНАЛОВ В ПАМЯТЬ ==========
+async function saveAllChannels(guild) {
+  try {
+    savedChannels.clear();
+    
+    const categories = [];
+    const standaloneChannels = [];
+    
+    for (const channel of guild.channels.cache.values()) {
+      if (channel.type === ChannelType.GuildCategory) {
+        const categoryData = {
+          id: channel.id,
+          name: channel.name,
+          type: 'category',
+          position: channel.position,
+          channels: []
+        };
+        categories.push(categoryData);
+      }
+    }
+    
+    for (const channel of guild.channels.cache.values()) {
+      if (channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildVoice) {
+        const channelData = {
+          id: channel.id,
+          name: channel.name,
+          type: channel.type === ChannelType.GuildText ? 'text' : 'voice',
+          parentId: channel.parentId,
+          parentName: channel.parent?.name || null,
+          position: channel.position,
+          topic: channel.topic || null,
+          nsfw: channel.nsfw || false,
+          rateLimitPerUser: channel.rateLimitPerUser || 0,
+          bitrate: channel.bitrate || null,
+          userLimit: channel.userLimit || null
+        };
+        
+        if (channel.parent) {
+          const category = categories.find(c => c.id === channel.parentId);
+          if (category) {
+            category.channels.push(channelData);
+          }
+        } else {
+          standaloneChannels.push(channelData);
+        }
+      }
+    }
+    
+    const backupData = {
+      guildId: guild.id,
+      guildName: guild.name,
+      savedAt: new Date(),
+      savedBy: 'system',
+      categories: categories,
+      standaloneChannels: standaloneChannels,
+      totalChannels: guild.channels.cache.size
+    };
+    
+    savedChannels.set('full_backup', backupData);
+    
+    console.log(`💾 Сохранено в память: ${categories.length} категорий, ${standaloneChannels.length} каналов вне категорий`);
+    
+    return backupData;
+    
+  } catch (error) {
+    console.error('❌ Ошибка сохранения каналов:', error);
+    return null;
+  }
+}
+
+// ========== ВОССТАНОВЛЕНИЕ КАНАЛОВ ИЗ ПАМЯТИ ==========
+async function restoreFromBackup(guild) {
+  try {
+    const backupData = savedChannels.get('full_backup');
+    if (!backupData) {
+      return { success: false, error: 'Нет сохранённых данных!' };
+    }
+    
+    let createdCategories = 0;
+    let createdChannels = 0;
+    const categoryMap = new Map();
+    
+    // Создаём категории
+    for (const cat of backupData.categories) {
+      try {
+        const existing = guild.channels.cache.get(cat.id);
+        if (!existing) {
+          const newCategory = await guild.channels.create({
+            name: cat.name,
+            type: ChannelType.GuildCategory,
+            position: cat.position
+          });
+          categoryMap.set(cat.id, newCategory.id);
+          createdCategories++;
+        } else {
+          categoryMap.set(cat.id, cat.id);
+        }
+      } catch (e) {
+        console.error(`❌ Ошибка создания категории ${cat.name}:`, e);
+      }
+    }
+    
+    // Создаём каналы в категориях
+    for (const cat of backupData.categories) {
+      for (const ch of cat.channels) {
+        try {
+          const existing = guild.channels.cache.get(ch.id);
+          if (!existing) {
+            const parentId = categoryMap.get(ch.parentId) || ch.parentId;
+            
+            if (ch.type === 'text') {
+              await guild.channels.create({
+                name: ch.name,
+                type: ChannelType.GuildText,
+                parent: parentId,
+                position: ch.position,
+                topic: ch.topic || undefined,
+                nsfw: ch.nsfw,
+                rateLimitPerUser: ch.rateLimitPerUser
+              });
+            } else if (ch.type === 'voice') {
+              await guild.channels.create({
+                name: ch.name,
+                type: ChannelType.GuildVoice,
+                parent: parentId,
+                position: ch.position,
+                bitrate: ch.bitrate || 64000,
+                userLimit: ch.userLimit || 0
+              });
+            }
+            createdChannels++;
+          }
+        } catch (e) {
+          console.error(`❌ Ошибка создания канала ${ch.name}:`, e);
+        }
+      }
+    }
+    
+    // Создаём каналы вне категорий
+    for (const ch of backupData.standaloneChannels) {
+      try {
+        const existing = guild.channels.cache.get(ch.id);
+        if (!existing) {
+          if (ch.type === 'text') {
+            await guild.channels.create({
+              name: ch.name,
+              type: ChannelType.GuildText,
+              position: ch.position,
+              topic: ch.topic || undefined,
+              nsfw: ch.nsfw,
+              rateLimitPerUser: ch.rateLimitPerUser
+            });
+          } else if (ch.type === 'voice') {
+            await guild.channels.create({
+              name: ch.name,
+              type: ChannelType.GuildVoice,
+              position: ch.position,
+              bitrate: ch.bitrate || 64000,
+              userLimit: ch.userLimit || 0
+            });
+          }
+          createdChannels++;
+        }
+      } catch (e) {
+        console.error(`❌ Ошибка создания канала ${ch.name}:`, e);
+      }
+    }
+    
+    return {
+      success: true,
+      categories: createdCategories,
+      channels: createdChannels,
+      backupData: backupData
+    };
+    
+  } catch (error) {
+    console.error('❌ Ошибка восстановления:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 // ========== ПРИВЕТСТВИЕ НОВЫХ УЧАСТНИКОВ ==========
 client.on('guildMemberAdd', async (member) => {
   try {
     const cfg = getConfig();
     
-    // Выдача роли при заходе
     if (cfg.autoRoleId) {
       try {
         await member.roles.add(cfg.autoRoleId);
@@ -84,24 +265,22 @@ client.on('guildMemberAdd', async (member) => {
       }
     }
     
-    // Определяем, кто пригласил
     let inviter = null;
     let totalInvites = 0;
     
     try {
       const newInvites = await member.guild.invites.fetch();
-      const oldInvites = invites.get(member.guild.id) || new Collection();
+      const oldInvites = invites.get(member.guild.id);
       
-      for (const [code, invite] of newInvites) {
-        const oldInvite = oldInvites.get(code);
-        
-        if (oldInvite && invite.uses > oldInvite.uses) {
-          inviter = invite.inviter;
-          break;
-        }
-        else if (!oldInvite && invite.uses === 1) {
-          inviter = invite.inviter;
-          break;
+      if (oldInvites) {
+        for (const [code, invite] of newInvites) {
+          const oldInvite = oldInvites.get(code);
+          
+          if (oldInvite && invite.uses > oldInvite.uses) {
+            inviter = invite.inviter;
+            console.log(`✅ Найдено приглашение: ${invite.code} от ${inviter?.tag}`);
+            break;
+          }
         }
       }
       
@@ -117,7 +296,6 @@ client.on('guildMemberAdd', async (member) => {
       console.error('❌ Ошибка определения пригласившего:', error);
     }
     
-    // Отправка приветствия в указанный канал
     if (cfg.welcomeChannelId) {
       const welcomeChannel = await member.guild.channels.fetch(cfg.welcomeChannelId).catch(() => null);
       
@@ -128,15 +306,13 @@ client.on('guildMemberAdd', async (member) => {
           .setDescription(
             `**${member.user}** присоединился к серверу!\n\n` +
             `🆔 **ID:** \`${member.user.id}\`\n` +
-            (inviter ? `📨 **Пригласил:** ${inviter} (всего приглашений: **${totalInvites}**)` : `📨 **Пригласил:** Неизвестно`)
+            (inviter ? `📨 **Пригласил:** ${inviter} (всего: **${totalInvites}**)` : `📨 **Пригласил:** Vanity URL / Discovery`)
           )
           .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 1024 }))
           .setFooter({ text: `Winter Team • ${new Date().toLocaleDateString('ru-RU')}` })
           .setTimestamp();
         
         await welcomeChannel.send({ embeds: [embed] });
-        
-        console.log(`👋 Приветствие отправлено для ${member.user.tag}${inviter ? ` (пригласил: ${inviter.tag})` : ''}`);
       }
     }
     
@@ -155,6 +331,7 @@ client.on('inviteCreate', async (invite) => {
   const guildInvites = invites.get(invite.guild.id) || new Collection();
   guildInvites.set(invite.code, invite);
   invites.set(invite.guild.id, guildInvites);
+  console.log(`📨 Новое приглашение: ${invite.code} от ${invite.inviter?.tag}`);
 });
 
 client.on('inviteDelete', async (invite) => {
@@ -389,6 +566,7 @@ client.on('channelDelete', async (channel) => {
     
     if (executor.bot) return;
     if (executor.id === guild.ownerId || executor.permissions.has(PermissionFlagsBits.Administrator)) {
+      console.log(`ℹ️ Канал "${channel.name}" удалён админом — игнорируем`);
       return;
     }
     
@@ -466,13 +644,18 @@ client.once('ready', async () => {
   const guild = client.guilds.cache.get(cfg.guildId);
   
   if (guild) {
+    // Загружаем приглашения
     try {
       const guildInvites = await guild.invites.fetch();
       invites.set(guild.id, new Collection(guildInvites.map(invite => [invite.code, invite])));
       console.log(`✅ Загружено ${guildInvites.size} приглашений`);
     } catch (error) {}
     
+    // СОХРАНЯЕМ ВСЕ КАНАЛЫ ПРИ ЗАПУСКЕ
+    await saveAllChannels(guild);
+    
     await cleanupOldChannels(guild);
+    console.log(`📊 Сервер: ${guild.name} | Участников: ${guild.memberCount}`);
   }
   
   try {
@@ -494,7 +677,10 @@ client.once('ready', async () => {
       { name: 'restore_all', description: 'Восстановить ВСЕ удалённые каналы из памяти (только для админа)' },
       { name: 'deleted_list', description: 'Показать список удалённых каналов в памяти' },
       { name: 'clear_memory', description: 'Очистить память удалённых каналов (только для админа)' },
-      { name: 'invites', description: 'Показать топ пригласивших (только для стаффа)' }
+      { name: 'invites', description: 'Показать топ пригласивших (только для стаффа)' },
+      { name: 'save_channels', description: 'Сохранить структуру всех каналов в память (только для админа)' },
+      { name: 'backup_info', description: 'Показать информацию о сохранённом бэкапе (только для админа)' },
+      { name: 'restore_backup', description: 'Восстановить каналы из сохранённого бэкапа (только для админа)' }
     ]);
     
     console.log('✅ Команды зарегистрированы!');
@@ -509,6 +695,130 @@ client.on('interactionCreate', async interaction => {
   const hasStaff = (cfg.staffRoleId_stack1 && interaction.member?.roles?.cache?.has(cfg.staffRoleId_stack1)) || 
                    (cfg.staffRoleId_stack2 && interaction.member?.roles?.cache?.has(cfg.staffRoleId_stack2)) ||
                    interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
+  
+  const isAdmin = interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
+  
+  // ========== /save_channels ==========
+  if (interaction.isCommand() && interaction.commandName === 'save_channels') {
+    if (!isAdmin) {
+      return interaction.reply({ content: '❌ Только для администраторов!', ephemeral: true });
+    }
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const backupData = await saveAllChannels(interaction.guild);
+      
+      if (backupData) {
+        const embed = new EmbedBuilder()
+          .setTitle('💾 КАНАЛЫ СОХРАНЕНЫ В ПАМЯТЬ')
+          .setColor(0x00FF00)
+          .setDescription(
+            `**Сервер:** ${backupData.guildName}\n` +
+            `**Категорий:** ${backupData.categories.length}\n` +
+            `**Каналов всего:** ${backupData.totalChannels}\n` +
+            `**Сохранено:** ${backupData.savedAt.toLocaleString('ru-RU')}`
+          )
+          .setTimestamp();
+        
+        await interaction.editReply({ embeds: [embed] });
+        
+        const logEmbed = new EmbedBuilder()
+          .setTitle('💾 Создан бэкап каналов')
+          .setColor(0x00FF00)
+          .addFields(
+            { name: '👮 Админ', value: `<@${interaction.user.id}>`, inline: true },
+            { name: '📁 Категорий', value: `${backupData.categories.length}`, inline: true },
+            { name: '📋 Каналов', value: `${backupData.totalChannels}`, inline: true }
+          )
+          .setTimestamp();
+        
+        await sendLog(interaction.guild, logEmbed);
+      }
+      
+    } catch (error) {
+      console.error('❌ Ошибка сохранения:', error);
+      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
+    }
+  }
+  
+  // ========== /backup_info ==========
+  if (interaction.isCommand() && interaction.commandName === 'backup_info') {
+    if (!isAdmin) {
+      return interaction.reply({ content: '❌ Только для администраторов!', ephemeral: true });
+    }
+    
+    const backupData = savedChannels.get('full_backup');
+    
+    if (!backupData) {
+      return interaction.reply({ content: '❌ Нет сохранённых данных! Используйте /save_channels', ephemeral: true });
+    }
+    
+    const embed = new EmbedBuilder()
+      .setTitle('📦 ИНФОРМАЦИЯ О БЭКАПЕ')
+      .setColor(0x3498DB)
+      .setDescription(
+        `**Сервер:** ${backupData.guildName}\n` +
+        `**Сохранено:** ${new Date(backupData.savedAt).toLocaleString('ru-RU')}\n` +
+        `**Кем:** ${backupData.savedBy}\n` +
+        `**Категорий:** ${backupData.categories.length}\n` +
+        `**Каналов:** ${backupData.totalChannels}`
+      )
+      .setTimestamp();
+    
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+  }
+  
+  // ========== /restore_backup ==========
+  if (interaction.isCommand() && interaction.commandName === 'restore_backup') {
+    if (!isAdmin) {
+      return interaction.reply({ content: '❌ Только для администраторов!', ephemeral: true });
+    }
+    
+    const backupData = savedChannels.get('full_backup');
+    
+    if (!backupData) {
+      return interaction.reply({ content: '❌ Нет сохранённых данных! Используйте /save_channels', ephemeral: true });
+    }
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const result = await restoreFromBackup(interaction.guild);
+      
+      if (result.success) {
+        const embed = new EmbedBuilder()
+          .setTitle('✅ КАНАЛЫ ВОССТАНОВЛЕНЫ ИЗ БЭКАПА')
+          .setColor(0x00FF00)
+          .setDescription(
+            `**Категорий создано:** ${result.categories}\n` +
+            `**Каналов создано:** ${result.channels}\n` +
+            `**Из бэкапа от:** ${new Date(result.backupData.savedAt).toLocaleString('ru-RU')}`
+          )
+          .setTimestamp();
+        
+        await interaction.editReply({ embeds: [embed] });
+        
+        const logEmbed = new EmbedBuilder()
+          .setTitle('🔄 Каналы восстановлены из бэкапа')
+          .setColor(0x00FF00)
+          .addFields(
+            { name: '👮 Админ', value: `<@${interaction.user.id}>`, inline: true },
+            { name: '📁 Категорий', value: `${result.categories}`, inline: true },
+            { name: '📋 Каналов', value: `${result.channels}`, inline: true }
+          )
+          .setTimestamp();
+        
+        await sendLog(interaction.guild, logEmbed);
+      } else {
+        await interaction.editReply({ content: `❌ ${result.error}` });
+      }
+      
+    } catch (error) {
+      console.error('❌ Ошибка восстановления:', error);
+      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
+    }
+  }
   
   // ========== /invites ==========
   if (interaction.isCommand() && interaction.commandName === 'invites') {
@@ -555,13 +865,18 @@ client.on('interactionCreate', async interaction => {
   
   // ========== /ping ==========
   if (interaction.isCommand() && interaction.commandName === 'ping') {
+    const backup = savedChannels.get('full_backup');
     const sent = await interaction.reply({ content: '🏓 Пинг...', fetchReply: true });
-    await interaction.editReply({ content: `🏓 Понг! ${sent.createdTimestamp - interaction.createdTimestamp}ms | API: ${client.ws.ping}ms\n🛡️ Каналов в памяти: ${deletedChannels.size}` });
+    await interaction.editReply({ 
+      content: `🏓 Понг! ${sent.createdTimestamp - interaction.createdTimestamp}ms | API: ${client.ws.ping}ms\n` +
+               `🛡️ Удалённых в памяти: ${deletedChannels.size}\n` +
+               `💾 Бэкап: ${backup ? `${backup.totalChannels} каналов` : 'не создан'}`
+    });
   }
   
   // ========== /deleted_list ==========
   if (interaction.isCommand() && interaction.commandName === 'deleted_list') {
-    if (!hasStaff && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    if (!hasStaff && !isAdmin) {
       return interaction.reply({ content: '❌ Только для стаффа/админов!', ephemeral: true });
     }
     
@@ -585,7 +900,7 @@ client.on('interactionCreate', async interaction => {
   
   // ========== /restore_channels ==========
   if (interaction.isCommand() && interaction.commandName === 'restore_channels') {
-    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    if (!isAdmin) {
       return interaction.reply({ content: '❌ Только для администраторов!', ephemeral: true });
     }
     
@@ -616,7 +931,7 @@ client.on('interactionCreate', async interaction => {
   
   // ========== /restore_all ==========
   if (interaction.isCommand() && interaction.commandName === 'restore_all') {
-    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    if (!isAdmin) {
       return interaction.reply({ content: '❌ Только для администраторов!', ephemeral: true });
     }
     
@@ -649,19 +964,19 @@ client.on('interactionCreate', async interaction => {
   
   // ========== /clear_memory ==========
   if (interaction.isCommand() && interaction.commandName === 'clear_memory') {
-    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    if (!isAdmin) {
       return interaction.reply({ content: '❌ Только для администраторов!', ephemeral: true });
     }
     
     const count = deletedChannels.size;
     deletedChannels.clear();
     
-    await interaction.reply({ content: `🧹 Память очищена! Удалено **${count}** записей о каналах.`, ephemeral: true });
+    await interaction.reply({ content: `🧹 Память удалённых каналов очищена! (${count} записей)`, ephemeral: true });
   }
   
   // ========== /unbanall ==========
   if (interaction.isCommand() && interaction.commandName === 'unbanall') {
-    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    if (!isAdmin) {
       return interaction.reply({ content: '❌ У вас нет прав! Только администратор.', ephemeral: true });
     }
     
@@ -732,7 +1047,7 @@ client.on('interactionCreate', async interaction => {
   
   // ========== /ticket_stack1 и /ticket_stack2 ==========
   if (interaction.isCommand() && (interaction.commandName === 'ticket_stack1' || interaction.commandName === 'ticket_stack2')) {
-    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    if (!isAdmin) {
       return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
     }
     const stack = interaction.commandName === 'ticket_stack1' ? 'stack1' : 'stack2';
@@ -1142,13 +1457,15 @@ client.login(token);
 // ========== HTTP СЕРВЕР ДЛЯ RENDER ==========
 http.createServer((req, res) => { 
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); 
+  const backup = savedChannels.get('full_backup');
   res.end(`
     <!DOCTYPE html>
     <html>
     <head><title>Winter Team Bot</title></head>
     <body style="font-family: Arial; text-align: center; padding: 50px;">
       <h1>✅ Winter Team Bot работает!</h1>
-      <p>🛡️ Каналов в памяти: ${deletedChannels.size}</p>
+      <p>🛡️ Удалённых в памяти: ${deletedChannels.size}</p>
+      <p>💾 Бэкап: ${backup ? `${backup.totalChannels} каналов от ${new Date(backup.savedAt).toLocaleString('ru-RU')}` : 'не создан'}</p>
       <p>⏰ Время работы: ${getUptime()}</p>
     </body>
     </html>
