@@ -1,4 +1,5 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ChannelType, Collection } = require('discord.js');
+const { MongoClient } = require('mongodb');
 const http = require('http');
 const fs = require('fs');
 
@@ -16,16 +17,44 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildBans // Для работы с банами
+    GatewayIntentBits.GuildBans
   ],
   partials: ['CHANNEL', 'MESSAGE']
 });
+
+// MongoDB клиент
+const mongoClient = new MongoClient(process.env.MONGODB_URI);
+let backupCollection;
+
+async function connectMongo() {
+  try {
+    await mongoClient.connect();
+    const db = mongoClient.db('server_backups');
+    backupCollection = db.collection('backups');
+    console.log('✅ Подключено к MongoDB Atlas');
+  } catch (error) {
+    console.error('❌ Ошибка подключения к MongoDB:', error);
+  }
+}
+
+// Защита от сноса
+const channelDeleteLog = new Collection(); // userId -> { count, firstDeleteTime }
+const deletedChannels = new Collection(); // channelId -> { name, type, parentId, position, topic, nsfw, rateLimitPerUser, bitrate, userLimit }
+
+// Очистка лога удалений каждые 10 секунд
+setInterval(() => {
+  const now = Date.now();
+  for (const [userId, data] of channelDeleteLog) {
+    if (now - data.firstDeleteTime > 10000) {
+      channelDeleteLog.delete(userId);
+    }
+  }
+}, 10000);
 
 const activeTickets = new Collection();
 const autoDeleteTimeouts = new Collection();
 const pendingSends = new Collection();
 
-// Статистика стаффа
 let staffStats = new Collection();
 
 try {
@@ -281,6 +310,159 @@ function getUptime() {
   return result;
 }
 
+// ========== ЗАЩИТА ОТ СНОСА: ОТСЛЕЖИВАНИЕ УДАЛЕНИЙ ==========
+client.on('channelDelete', async (channel) => {
+  try {
+    // Игнорируем DM каналы
+    if (channel.type === ChannelType.DM || !channel.guild) return;
+    
+    const guild = channel.guild;
+    
+    // Получаем аудит лог
+    const auditLogs = await guild.fetchAuditLogs({ type: 12, limit: 1 }); // 12 = CHANNEL_DELETE
+    const deleteLog = auditLogs.entries.first();
+    
+    if (!deleteLog) return;
+    
+    const { executor, target } = deleteLog;
+    
+    // Если удалил бот — игнорируем
+    if (executor.bot) return;
+    
+    // Если удалил администратор — игнорируем
+    if (executor.id === guild.ownerId || executor.permissions.has(PermissionFlagsBits.Administrator)) {
+      return;
+    }
+    
+    console.log(`🗑️ Канал "${channel.name}" удалён пользователем ${executor.tag}`);
+    
+    // Сохраняем информацию о канале для восстановления
+    const channelData = {
+      name: channel.name,
+      type: channel.type === ChannelType.GuildText ? 'text' : (channel.type === ChannelType.GuildVoice ? 'voice' : 'category'),
+      parentId: channel.parentId,
+      parentName: channel.parent?.name || null,
+      position: channel.position,
+      topic: channel.topic || null,
+      nsfw: channel.nsfw || false,
+      rateLimitPerUser: channel.rateLimitPerUser || 0,
+      bitrate: channel.bitrate || null,
+      userLimit: channel.userLimit || null
+    };
+    
+    // Сохраняем канал в памяти
+    deletedChannels.set(channel.id, channelData);
+    
+    // Удаляем через 1 час из памяти
+    setTimeout(() => deletedChannels.delete(channel.id), 60 * 60 * 1000);
+    
+    // Логируем удаление для анти-сноса
+    const now = Date.now();
+    const userLog = channelDeleteLog.get(executor.id) || { count: 0, firstDeleteTime: now };
+    userLog.count++;
+    userLog.firstDeleteTime = userLog.firstDeleteTime || now;
+    channelDeleteLog.set(executor.id, userLog);
+    
+    // Если удалил 3+ канала за 10 секунд — БАН
+    if (userLog.count >= 3 && (now - userLog.firstDeleteTime) <= 10000) {
+      console.log(`🚨 АНТИ-СНОС: ${executor.tag} удалил ${userLog.count} каналов за 10 секунд!`);
+      
+      // Тайм-аут на 24 часа
+      try {
+        await executor.timeout(24 * 60 * 60 * 1000, 'Анти-снос: массовое удаление каналов');
+      } catch (error) {
+        console.error('❌ Ошибка тайм-аута:', error);
+      }
+      
+      // Восстанавливаем удалённые каналы
+      let restoredCount = 0;
+      for (const [chId, chData] of deletedChannels) {
+        try {
+          let parentId = null;
+          if (chData.parentName) {
+            const parent = guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && c.name === chData.parentName);
+            if (parent) parentId = parent.id;
+          } else if (chData.parentId) {
+            parentId = chData.parentId;
+          }
+          
+          if (chData.type === 'text') {
+            await guild.channels.create({
+              name: chData.name,
+              type: ChannelType.GuildText,
+              parent: parentId,
+              position: chData.position,
+              topic: chData.topic || undefined,
+              nsfw: chData.nsfw,
+              rateLimitPerUser: chData.rateLimitPerUser
+            });
+            restoredCount++;
+          } else if (chData.type === 'voice') {
+            await guild.channels.create({
+              name: chData.name,
+              type: ChannelType.GuildVoice,
+              parent: parentId,
+              position: chData.position,
+              bitrate: chData.bitrate || 64000,
+              userLimit: chData.userLimit || 0
+            });
+            restoredCount++;
+          } else if (chData.type === 'category') {
+            await guild.channels.create({
+              name: chData.name,
+              type: ChannelType.GuildCategory,
+              position: chData.position
+            });
+            restoredCount++;
+          }
+        } catch (e) {
+          console.error(`❌ Ошибка восстановления канала ${chData.name}:`, e);
+        }
+      }
+      
+      // Очищаем лог
+      channelDeleteLog.delete(executor.id);
+      
+      // Уведомление всем админам в ЛС
+      const admins = guild.members.cache.filter(m => m.permissions.has(PermissionFlagsBits.Administrator) && !m.user.bot);
+      
+      for (const admin of admins.values()) {
+        try {
+          await admin.send({
+            embeds: [new EmbedBuilder()
+              .setTitle('🚨 АНТИ-СНОС АКТИВИРОВАН')
+              .setColor(0xFF0000)
+              .setDescription(
+                `**Пользователь:** ${executor.tag} (${executor.id})\n` +
+                `**Удалил каналов:** ${userLog.count}\n` +
+                `**Восстановлено:** ${restoredCount}\n` +
+                `**Действие:** Тайм-аут на 24 часа`
+              )
+              .setTimestamp()
+            ]
+          });
+        } catch (e) {}
+      }
+      
+      // Лог в канал логов
+      const logEmbed = new EmbedBuilder()
+        .setTitle('🚨 АНТИ-СНОС АКТИВИРОВАН')
+        .setColor(0xFF0000)
+        .addFields(
+          { name: '👤 Нарушитель', value: `${executor.tag} (${executor.id})`, inline: true },
+          { name: '🗑️ Удалено', value: `${userLog.count}`, inline: true },
+          { name: '🔄 Восстановлено', value: `${restoredCount}`, inline: true }
+        )
+        .setTimestamp();
+      
+      await sendLog(guild, logEmbed);
+    }
+    
+  } catch (error) {
+    console.error('❌ Ошибка в channelDelete:', error);
+  }
+});
+
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} запущен!`);
   
@@ -289,6 +471,8 @@ client.once('ready', async () => {
   }, 60000);
   
   client.user.setActivity(`❤️ ${getUptime()}`, { type: 3 });
+  
+  await connectMongo();
   
   const cfg = getConfig();
   const guild = client.guilds.cache.get(cfg.guildId);
@@ -324,10 +508,10 @@ client.once('ready', async () => {
           { name: 'channel_id', description: 'ID канала для удаления', type: 3, required: true }
         ]
       },
-      {
-        name: 'unbanall',
-        description: 'Разбанить всех забаненных участников на сервере (только для админа)'
-      }
+      { name: 'unbanall', description: 'Разбанить всех забаненных участников (только для админа)' },
+      { name: 'backup', description: 'Создать бэкап структуры сервера в облако' },
+      { name: 'backups', description: 'Показать список всех бэкапов' },
+      { name: 'restore', description: 'Восстановить сервер из последнего бэкапа' }
     ]);
     
     console.log('✅ Команды зарегистрированы!');
@@ -351,7 +535,7 @@ client.on('interactionCreate', async interaction => {
   // ========== КОМАНДА /unbanall ==========
   if (interaction.isCommand() && interaction.commandName === 'unbanall') {
     if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-      return interaction.reply({ content: '❌ У вас нет прав! Только администратор сервера.', ephemeral: true });
+      return interaction.reply({ content: '❌ У вас нет прав! Только администратор.', ephemeral: true });
     }
     
     await interaction.deferReply({ ephemeral: true });
@@ -370,10 +554,8 @@ client.on('interactionCreate', async interaction => {
         try {
           await interaction.guild.members.unban(ban.user.id);
           unbannedCount++;
-          console.log(`✅ Разбанен: ${ban.user.tag}`);
         } catch (error) {
           failedCount++;
-          console.error(`❌ Ошибка разбана ${ban.user.tag}:`, error);
         }
       }
       
@@ -385,12 +567,11 @@ client.on('interactionCreate', async interaction => {
       
       await interaction.editReply({ embeds: [embed] });
       
-      // Лог
       const logEmbed = new EmbedBuilder()
         .setTitle('🔓 Массовый разбан')
         .setColor(0x00FF00)
         .addFields(
-          { name: '👮 Администратор', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
+          { name: '👮 Администратор', value: `<@${interaction.user.id}>`, inline: true },
           { name: '📊 Разбанено', value: `${unbannedCount}`, inline: true },
           { name: '❌ Ошибок', value: `${failedCount}`, inline: true }
         )
@@ -440,7 +621,7 @@ client.on('interactionCreate', async interaction => {
         .setColor(0xFF0000)
         .addFields(
           { name: '📁 Канал', value: channelName, inline: true },
-          { name: '👮 Стафф', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true }
+          { name: '👮 Стафф', value: `<@${interaction.user.id}>`, inline: true }
         )
         .setTimestamp();
       
@@ -448,6 +629,249 @@ client.on('interactionCreate', async interaction => {
       
     } catch (error) {
       console.error('❌ Ошибка удаления канала:', error);
+      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
+    }
+  }
+  
+  // ========== КОМАНДА /backup ==========
+  if (interaction.isCommand() && interaction.commandName === 'backup') {
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ content: '❌ У вас нет прав! Только администратор.', ephemeral: true });
+    }
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const guild = interaction.guild;
+      
+      const categories = [];
+      const standaloneChannels = [];
+      
+      for (const channel of guild.channels.cache.values()) {
+        if (channel.type === ChannelType.GuildCategory) {
+          categories.push({
+            name: channel.name,
+            type: 'category',
+            position: channel.position
+          });
+        } else if (channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildVoice) {
+          const channelData = {
+            name: channel.name,
+            type: channel.type === ChannelType.GuildText ? 'text' : 'voice',
+            parentName: channel.parent?.name || null,
+            position: channel.position,
+            topic: channel.topic || null,
+            nsfw: channel.nsfw || false,
+            rateLimitPerUser: channel.rateLimitPerUser || 0,
+            bitrate: channel.bitrate || null,
+            userLimit: channel.userLimit || null
+          };
+          
+          if (channel.parent) {
+            const category = categories.find(c => c.name === channel.parent.name);
+            if (category) {
+              if (!category.channels) category.channels = [];
+              category.channels.push(channelData);
+            }
+          } else {
+            standaloneChannels.push(channelData);
+          }
+        }
+      }
+      
+      const backup = {
+        guildId: guild.id,
+        guildName: guild.name,
+        createdAt: new Date(),
+        createdBy: interaction.user.id,
+        categories: categories,
+        standaloneChannels: standaloneChannels
+      };
+      
+      await backupCollection.insertOne(backup);
+      
+      const embed = new EmbedBuilder()
+        .setTitle('📦 БЭКАП СОХРАНЁН В ОБЛАКО')
+        .setColor(0x00FF00)
+        .setDescription(`**Сервер:** ${guild.name}\n**Категорий:** ${categories.length}\n**Каналов вне категорий:** ${standaloneChannels.length}\n**Сохранено:** ${backup.createdAt.toLocaleString('ru-RU')}`)
+        .setTimestamp();
+      
+      await interaction.editReply({ embeds: [embed] });
+      
+      const logEmbed = new EmbedBuilder()
+        .setTitle('📦 Создан бэкап сервера')
+        .setColor(0x00FF00)
+        .addFields(
+          { name: '👮 Админ', value: `<@${interaction.user.id}>`, inline: true },
+          { name: '📁 Категорий', value: `${categories.length}`, inline: true }
+        )
+        .setTimestamp();
+      
+      await sendLog(guild, logEmbed);
+      
+    } catch (error) {
+      console.error('❌ Ошибка бэкапа:', error);
+      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
+    }
+  }
+  
+  // ========== КОМАНДА /backups ==========
+  if (interaction.isCommand() && interaction.commandName === 'backups') {
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
+    }
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const backups = await backupCollection
+        .find({ guildId: interaction.guild.id })
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .toArray();
+      
+      if (backups.length === 0) {
+        return interaction.editReply({ content: 'ℹ️ Нет сохранённых бэкапов.' });
+      }
+      
+      const backupList = backups.map((b, i) => 
+        `**${i + 1}.** ${b.createdAt.toLocaleString('ru-RU')} — ${b.categories?.length || 0} кат., ${b.standaloneChannels?.length || 0} кан.`
+      ).join('\n');
+      
+      const embed = new EmbedBuilder()
+        .setTitle('📦 СПИСОК БЭКАПОВ')
+        .setColor(0x3498DB)
+        .setDescription(backupList)
+        .setFooter({ text: 'Используйте /restore для восстановления последнего бэкапа' })
+        .setTimestamp();
+      
+      await interaction.editReply({ embeds: [embed] });
+      
+    } catch (error) {
+      console.error('❌ Ошибка получения бэкапов:', error);
+      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
+    }
+  }
+  
+  // ========== КОМАНДА /restore ==========
+  if (interaction.isCommand() && interaction.commandName === 'restore') {
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
+    }
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const backup = await backupCollection
+        .find({ guildId: interaction.guild.id })
+        .sort({ createdAt: -1 })
+        .limit(1)
+        .next();
+      
+      if (!backup) {
+        return interaction.editReply({ content: '❌ Бэкап не найден! Сначала создайте бэкап через /backup.' });
+      }
+      
+      await interaction.editReply({ content: '🔄 Восстанавливаю сервер из облака... Это может занять несколько минут.' });
+      
+      const guild = interaction.guild;
+      let createdCategories = 0;
+      let createdChannels = 0;
+      
+      const categoryMap = new Map();
+      
+      for (const cat of backup.categories) {
+        try {
+          const newCategory = await guild.channels.create({
+            name: cat.name,
+            type: ChannelType.GuildCategory,
+            position: cat.position
+          });
+          categoryMap.set(cat.name, newCategory.id);
+          createdCategories++;
+          
+          if (cat.channels) {
+            for (const ch of cat.channels) {
+              try {
+                if (ch.type === 'text') {
+                  await guild.channels.create({
+                    name: ch.name,
+                    type: ChannelType.GuildText,
+                    parent: newCategory.id,
+                    position: ch.position,
+                    topic: ch.topic || undefined,
+                    nsfw: ch.nsfw,
+                    rateLimitPerUser: ch.rateLimitPerUser
+                  });
+                } else if (ch.type === 'voice') {
+                  await guild.channels.create({
+                    name: ch.name,
+                    type: ChannelType.GuildVoice,
+                    parent: newCategory.id,
+                    position: ch.position,
+                    bitrate: ch.bitrate || 64000,
+                    userLimit: ch.userLimit || 0
+                  });
+                }
+                createdChannels++;
+              } catch (e) {
+                console.error(`❌ Ошибка создания канала ${ch.name}:`, e);
+              }
+            }
+          }
+        } catch (e) {
+          console.error(`❌ Ошибка создания категории ${cat.name}:`, e);
+        }
+      }
+      
+      for (const ch of backup.standaloneChannels) {
+        try {
+          if (ch.type === 'text') {
+            await guild.channels.create({
+              name: ch.name,
+              type: ChannelType.GuildText,
+              position: ch.position,
+              topic: ch.topic || undefined,
+              nsfw: ch.nsfw,
+              rateLimitPerUser: ch.rateLimitPerUser
+            });
+          } else if (ch.type === 'voice') {
+            await guild.channels.create({
+              name: ch.name,
+              type: ChannelType.GuildVoice,
+              position: ch.position,
+              bitrate: ch.bitrate || 64000,
+              userLimit: ch.userLimit || 0
+            });
+          }
+          createdChannels++;
+        } catch (e) {
+          console.error(`❌ Ошибка создания канала ${ch.name}:`, e);
+        }
+      }
+      
+      const embed = new EmbedBuilder()
+        .setTitle('✅ СЕРВЕР ВОССТАНОВЛЕН ИЗ ОБЛАКА')
+        .setColor(0x00FF00)
+        .setDescription(`**Категорий создано:** ${createdCategories}\n**Каналов создано:** ${createdChannels}\n**Из бэкапа:** ${backup.createdAt.toLocaleString('ru-RU')}`)
+        .setTimestamp();
+      
+      await interaction.editReply({ embeds: [embed] });
+      
+      const logEmbed = new EmbedBuilder()
+        .setTitle('🔄 Сервер восстановлен из облака')
+        .setColor(0x00FF00)
+        .addFields(
+          { name: '👮 Админ', value: `<@${interaction.user.id}>`, inline: true },
+          { name: '📁 Категорий', value: `${createdCategories}`, inline: true },
+          { name: '📋 Каналов', value: `${createdChannels}`, inline: true }
+        )
+        .setTimestamp();
+      
+      await sendLog(guild, logEmbed);
+      
+    } catch (error) {
+      console.error('❌ Ошибка восстановления:', error);
       await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
     }
   }
@@ -698,7 +1122,7 @@ client.on('interactionCreate', async interaction => {
         .setTitle('📝 Новая заявка')
         .setColor(0x3498DB)
         .addFields(
-          { name: '👤 Заявитель', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
+          { name: '👤 Заявитель', value: `<@${interaction.user.id}>`, inline: true },
           { name: '📋 Состав', value: stack === 'stack1' ? 'СТАК 1' : 'СТАК 2', inline: true },
           { name: '⏰ Часы', value: `${hours}`, inline: true }
         )
