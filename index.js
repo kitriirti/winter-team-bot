@@ -15,7 +15,8 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildVoiceStates
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildBans // Для работы с банами
   ],
   partials: ['CHANNEL', 'MESSAGE']
 });
@@ -322,6 +323,10 @@ client.once('ready', async () => {
         options: [
           { name: 'channel_id', description: 'ID канала для удаления', type: 3, required: true }
         ]
+      },
+      {
+        name: 'unbanall',
+        description: 'Разбанить всех забаненных участников на сервере (только для админа)'
       }
     ]);
     
@@ -341,6 +346,62 @@ client.on('interactionCreate', async interaction => {
   if (interaction.isCommand() && interaction.commandName === 'ping') {
     const sent = await interaction.reply({ content: '🏓 Пинг...', fetchReply: true, ephemeral: true });
     await interaction.editReply({ content: `🏓 Понг! ${sent.createdTimestamp - interaction.createdTimestamp}ms | API: ${client.ws.ping}ms` });
+  }
+  
+  // ========== КОМАНДА /unbanall ==========
+  if (interaction.isCommand() && interaction.commandName === 'unbanall') {
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ content: '❌ У вас нет прав! Только администратор сервера.', ephemeral: true });
+    }
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const bans = await interaction.guild.bans.fetch();
+      
+      if (bans.size === 0) {
+        return interaction.editReply({ content: 'ℹ️ На сервере нет забаненных участников.' });
+      }
+      
+      let unbannedCount = 0;
+      let failedCount = 0;
+      
+      for (const ban of bans.values()) {
+        try {
+          await interaction.guild.members.unban(ban.user.id);
+          unbannedCount++;
+          console.log(`✅ Разбанен: ${ban.user.tag}`);
+        } catch (error) {
+          failedCount++;
+          console.error(`❌ Ошибка разбана ${ban.user.tag}:`, error);
+        }
+      }
+      
+      const embed = new EmbedBuilder()
+        .setTitle('🔓 РАЗБАН ВСЕХ УЧАСТНИКОВ')
+        .setColor(0x00FF00)
+        .setDescription(`**Успешно разбанено:** ${unbannedCount}\n**Ошибок:** ${failedCount}`)
+        .setTimestamp();
+      
+      await interaction.editReply({ embeds: [embed] });
+      
+      // Лог
+      const logEmbed = new EmbedBuilder()
+        .setTitle('🔓 Массовый разбан')
+        .setColor(0x00FF00)
+        .addFields(
+          { name: '👮 Администратор', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
+          { name: '📊 Разбанено', value: `${unbannedCount}`, inline: true },
+          { name: '❌ Ошибок', value: `${failedCount}`, inline: true }
+        )
+        .setTimestamp();
+      
+      await sendLog(interaction.guild, logEmbed);
+      
+    } catch (error) {
+      console.error('❌ Ошибка разбана:', error);
+      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
+    }
   }
   
   // ========== КОМАНДА /deletechannel ==========
