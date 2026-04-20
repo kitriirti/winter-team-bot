@@ -9,7 +9,8 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildBans
+    GatewayIntentBits.GuildBans,
+    GatewayIntentBits.GuildInvites
   ]
 });
 
@@ -18,8 +19,10 @@ const channelDeleteLog = new Collection();
 const deletedChannels = new Collection();
 const activeTickets = new Collection();
 const autoDeleteTimeouts = new Collection();
-const pendingSends = new Collection();
 let staffStats = new Collection();
+
+// ========== СИСТЕМА ПРИГЛАШЕНИЙ ==========
+const invites = new Collection();
 
 // ========== ПЕРЕМЕННЫЕ СОСТОЯНИЯ ==========
 let ticketStatus = { stack1: true, stack2: true };
@@ -61,8 +64,8 @@ const getConfig = () => {
     staffRoleId_stack2: process.env.STAFF_ROLE_STACK2,
     logChannelId: process.env.LOG_CHANNEL_ID,
     memberRoleId: process.env.MEMBER_ROLE_ID,
-    welcomeChannelId: process.env.WELCOME_CHANNEL_ID,  // НОВОЕ: канал для приветствий
-    autoRoleId: process.env.AUTO_ROLE_ID               // НОВОЕ: роль при заходе
+    welcomeChannelId: process.env.WELCOME_CHANNEL_ID,
+    autoRoleId: process.env.AUTO_ROLE_ID
   };
 };
 
@@ -81,6 +84,39 @@ client.on('guildMemberAdd', async (member) => {
       }
     }
     
+    // Определяем, кто пригласил
+    let inviter = null;
+    let totalInvites = 0;
+    
+    try {
+      const newInvites = await member.guild.invites.fetch();
+      const oldInvites = invites.get(member.guild.id) || new Collection();
+      
+      for (const [code, invite] of newInvites) {
+        const oldInvite = oldInvites.get(code);
+        
+        if (oldInvite && invite.uses > oldInvite.uses) {
+          inviter = invite.inviter;
+          break;
+        }
+        else if (!oldInvite && invite.uses === 1) {
+          inviter = invite.inviter;
+          break;
+        }
+      }
+      
+      invites.set(member.guild.id, newInvites);
+      
+      if (inviter) {
+        totalInvites = newInvites
+          .filter(inv => inv.inviter?.id === inviter.id)
+          .reduce((total, inv) => total + (inv.uses || 0), 0);
+      }
+      
+    } catch (error) {
+      console.error('❌ Ошибка определения пригласившего:', error);
+    }
+    
     // Отправка приветствия в указанный канал
     if (cfg.welcomeChannelId) {
       const welcomeChannel = await member.guild.channels.fetch(cfg.welcomeChannelId).catch(() => null);
@@ -89,43 +125,18 @@ client.on('guildMemberAdd', async (member) => {
         const embed = new EmbedBuilder()
           .setColor(0x00FF00)
           .setTitle('👋 НОВЫЙ УЧАСТНИК!')
-          .setDescription(`**${member.user.tag}** присоединился к серверу!`)
+          .setDescription(
+            `**${member.user}** присоединился к серверу!\n\n` +
+            `🆔 **ID:** \`${member.user.id}\`\n` +
+            (inviter ? `📨 **Пригласил:** ${inviter} (всего приглашений: **${totalInvites}**)` : `📨 **Пригласил:** Неизвестно`)
+          )
           .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 1024 }))
-          .addFields(
-            { name: '📅 Аккаунт создан', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:D>`, inline: true },
-            { name: '👤 ID', value: member.user.id, inline: true },
-            { name: '🔢 Участник №', value: `${member.guild.memberCount}`, inline: true }
-          )
-          .setFooter({ text: `Добро пожаловать, ${member.user.username}!` })
+          .setFooter({ text: `Winter Team • ${new Date().toLocaleDateString('ru-RU')}` })
           .setTimestamp();
         
-        await welcomeChannel.send({ 
-          content: `**Привет, ${member.user}! 🎉** Добро пожаловать на сервер **${member.guild.name}**!`,
-          embeds: [embed] 
-        });
+        await welcomeChannel.send({ embeds: [embed] });
         
-        console.log(`👋 Приветствие отправлено для ${member.user.tag}`);
-      } else {
-        console.log(`⚠️ Канал приветствий (${cfg.welcomeChannelId}) не найден`);
-      }
-    }
-    
-    // Логирование в канал логов
-    if (cfg.logChannelId) {
-      const logChannel = await member.guild.channels.fetch(cfg.logChannelId).catch(() => null);
-      
-      if (logChannel) {
-        const logEmbed = new EmbedBuilder()
-          .setColor(0x00FF00)
-          .setTitle('📥 УЧАСТНИК ЗАШЁЛ')
-          .setDescription(`**${member.user.tag}** (${member.user.id})`)
-          .addFields(
-            { name: '📅 Аккаунт создан', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:D>`, inline: true },
-            { name: '🔢 Всего участников', value: `${member.guild.memberCount}`, inline: true }
-          )
-          .setTimestamp();
-        
-        await logChannel.send({ embeds: [logEmbed] });
+        console.log(`👋 Приветствие отправлено для ${member.user.tag}${inviter ? ` (пригласил: ${inviter.tag})` : ''}`);
       }
     }
     
@@ -136,36 +147,25 @@ client.on('guildMemberAdd', async (member) => {
 
 // ========== ПРОЩАНИЕ С УЧАСТНИКОМ ==========
 client.on('guildMemberRemove', async (member) => {
-  try {
-    const cfg = getConfig();
-    
-    if (cfg.logChannelId) {
-      const logChannel = await member.guild.channels.fetch(cfg.logChannelId).catch(() => null);
-      
-      if (logChannel) {
-        const logEmbed = new EmbedBuilder()
-          .setColor(0xFF0000)
-          .setTitle('📤 УЧАСТНИК ВЫШЕЛ')
-          .setDescription(`**${member.user.tag}** (${member.user.id})`)
-          .addFields(
-            { name: '📅 Был на сервере с', value: member.joinedAt ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:D>` : 'Неизвестно', inline: true },
-            { name: '🔢 Осталось участников', value: `${member.guild.memberCount}`, inline: true }
-          )
-          .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
-          .setTimestamp();
-        
-        await logChannel.send({ embeds: [logEmbed] });
-      }
-    }
-    
-    console.log(`👋 Участник ${member.user.tag} покинул сервер`);
-    
-  } catch (error) {
-    console.error('❌ Ошибка в guildMemberRemove:', error);
+  console.log(`👋 Участник ${member.user.tag} покинул сервер`);
+});
+
+// ========== ОТСЛЕЖИВАНИЕ ПРИГЛАШЕНИЙ ==========
+client.on('inviteCreate', async (invite) => {
+  const guildInvites = invites.get(invite.guild.id) || new Collection();
+  guildInvites.set(invite.code, invite);
+  invites.set(invite.guild.id, guildInvites);
+});
+
+client.on('inviteDelete', async (invite) => {
+  const guildInvites = invites.get(invite.guild.id);
+  if (guildInvites) {
+    guildInvites.delete(invite.code);
+    invites.set(invite.guild.id, guildInvites);
   }
 });
 
-// ========== ОСТАЛЬНЫЕ ФУНКЦИИ (без изменений) ==========
+// ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 function getWorkingHoursMessage() {
   const now = new Date();
   const mskHour = (now.getUTCHours() + 3) % 24;
@@ -466,8 +466,13 @@ client.once('ready', async () => {
   const guild = client.guilds.cache.get(cfg.guildId);
   
   if (guild) {
+    try {
+      const guildInvites = await guild.invites.fetch();
+      invites.set(guild.id, new Collection(guildInvites.map(invite => [invite.code, invite])));
+      console.log(`✅ Загружено ${guildInvites.size} приглашений`);
+    } catch (error) {}
+    
     await cleanupOldChannels(guild);
-    console.log(`📊 Сервер: ${guild.name} | Участников: ${guild.memberCount}`);
   }
   
   try {
@@ -488,7 +493,8 @@ client.once('ready', async () => {
       { name: 'restore_channels', description: 'Восстановить последние удалённые каналы (только для админа)' },
       { name: 'restore_all', description: 'Восстановить ВСЕ удалённые каналы из памяти (только для админа)' },
       { name: 'deleted_list', description: 'Показать список удалённых каналов в памяти' },
-      { name: 'clear_memory', description: 'Очистить память удалённых каналов (только для админа)' }
+      { name: 'clear_memory', description: 'Очистить память удалённых каналов (только для админа)' },
+      { name: 'invites', description: 'Показать топ пригласивших (только для стаффа)' }
     ]);
     
     console.log('✅ Команды зарегистрированы!');
@@ -503,6 +509,49 @@ client.on('interactionCreate', async interaction => {
   const hasStaff = (cfg.staffRoleId_stack1 && interaction.member?.roles?.cache?.has(cfg.staffRoleId_stack1)) || 
                    (cfg.staffRoleId_stack2 && interaction.member?.roles?.cache?.has(cfg.staffRoleId_stack2)) ||
                    interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
+  
+  // ========== /invites ==========
+  if (interaction.isCommand() && interaction.commandName === 'invites') {
+    if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const guildInvites = await interaction.guild.invites.fetch();
+      const inviterStats = new Collection();
+      
+      for (const invite of guildInvites.values()) {
+        if (invite.inviter) {
+          const stats = inviterStats.get(invite.inviter.id) || { user: invite.inviter, uses: 0 };
+          stats.uses += invite.uses || 0;
+          inviterStats.set(invite.inviter.id, stats);
+        }
+      }
+      
+      const sorted = Array.from(inviterStats.values())
+        .sort((a, b) => b.uses - a.uses)
+        .slice(0, 15);
+      
+      if (sorted.length === 0) {
+        return interaction.editReply({ content: '📭 Нет данных о приглашениях' });
+      }
+      
+      const list = sorted.map((stat, i) => 
+        `**${i + 1}.** ${stat.user} — **${stat.uses}** приглашений`
+      ).join('\n');
+      
+      const embed = new EmbedBuilder()
+        .setTitle('📨 ТОП ПРИГЛАСИВШИХ')
+        .setColor(0x9B59B6)
+        .setDescription(list)
+        .setTimestamp();
+      
+      await interaction.editReply({ embeds: [embed] });
+      
+    } catch (error) {
+      await interaction.editReply({ content: '❌ Ошибка получения статистики!' });
+    }
+  }
   
   // ========== /ping ==========
   if (interaction.isCommand() && interaction.commandName === 'ping') {
@@ -645,20 +694,7 @@ client.on('interactionCreate', async interaction => {
       
       await interaction.editReply({ embeds: [embed] });
       
-      const logEmbed = new EmbedBuilder()
-        .setTitle('🔓 Массовый разбан')
-        .setColor(0x00FF00)
-        .addFields(
-          { name: '👮 Администратор', value: `<@${interaction.user.id}>`, inline: true },
-          { name: '📊 Разбанено', value: `${unbannedCount}`, inline: true },
-          { name: '❌ Ошибок', value: `${failedCount}`, inline: true }
-        )
-        .setTimestamp();
-      
-      await sendLog(interaction.guild, logEmbed);
-      
     } catch (error) {
-      console.error('❌ Ошибка разбана:', error);
       await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
     }
   }
@@ -735,7 +771,6 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ content: `✅ Сообщение отправлено в ${channel} от имени **${customName}**!`, ephemeral: true });
       
     } catch (error) {
-      console.error('❌ Ошибка:', error);
       await interaction.reply({ content: `❌ Ошибка: ${error.message}`, ephemeral: true });
     }
   }
@@ -1098,7 +1133,7 @@ process.on('unhandledRejection', e => console.error('❌ Необработан�
 // ========== ЗАПУСК ==========
 const token = process.env.DISCORD_TOKEN;
 if (!token) { 
-  console.error('❌ ТОКЕН НЕ НАЙДЕН! Укажите DISCORD_TOKEN в переменных окружения Render'); 
+  console.error('❌ ТОКЕН НЕ НАЙДЕН!'); 
   process.exit(1); 
 }
 
