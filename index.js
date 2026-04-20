@@ -20,6 +20,7 @@ const deletedChannels = new Collection(); // Анти-снос: удалённы
 const savedChannels = new Collection(); // Сохранённые каналы (бэкап)
 const activeTickets = new Collection();
 const autoDeleteTimeouts = new Collection();
+const timedOutUsers = new Collection(); // Пользователи с таймаутом (для кнопки снятия)
 let staffStats = new Collection();
 
 // ========== СИСТЕМА ПРИГЛАШЕНИЙ ==========
@@ -152,7 +153,6 @@ async function restoreFromBackup(guild) {
     let createdChannels = 0;
     const categoryMap = new Map();
     
-    // Создаём категории
     for (const cat of backupData.categories) {
       try {
         const existing = guild.channels.cache.get(cat.id);
@@ -172,7 +172,6 @@ async function restoreFromBackup(guild) {
       }
     }
     
-    // Создаём каналы в категориях
     for (const cat of backupData.categories) {
       for (const ch of cat.channels) {
         try {
@@ -208,7 +207,6 @@ async function restoreFromBackup(guild) {
       }
     }
     
-    // Создаём каналы вне категорий
     for (const ch of backupData.standaloneChannels) {
       try {
         const existing = guild.channels.cache.get(ch.id);
@@ -273,13 +271,41 @@ client.on('guildMemberAdd', async (member) => {
       const oldInvites = invites.get(member.guild.id);
       
       if (oldInvites) {
+        let maxIncrease = 0;
         for (const [code, invite] of newInvites) {
           const oldInvite = oldInvites.get(code);
-          
-          if (oldInvite && invite.uses > oldInvite.uses) {
+          if (oldInvite) {
+            const increase = invite.uses - oldInvite.uses;
+            if (increase > maxIncrease) {
+              maxIncrease = increase;
+              inviter = invite.inviter;
+            }
+          }
+        }
+        
+        if (!inviter) {
+          for (const [code, invite] of newInvites) {
+            const oldInvite = oldInvites.get(code);
+            if (oldInvite && invite.uses > oldInvite.uses) {
+              inviter = invite.inviter;
+              break;
+            }
+            if (!oldInvite && invite.uses === 1) {
+              inviter = invite.inviter;
+              break;
+            }
+          }
+        }
+        
+        if (inviter) {
+          console.log(`✅ Пригласил: ${inviter.tag} (увеличение: +${maxIncrease})`);
+        }
+      } else {
+        let maxUses = 0;
+        for (const [code, invite] of newInvites) {
+          if (invite.uses > maxUses) {
+            maxUses = invite.uses;
             inviter = invite.inviter;
-            console.log(`✅ Найдено приглашение: ${invite.code} от ${inviter?.tag}`);
-            break;
           }
         }
       }
@@ -306,7 +332,7 @@ client.on('guildMemberAdd', async (member) => {
           .setDescription(
             `**${member.user}** присоединился к серверу!\n\n` +
             `🆔 **ID:** \`${member.user.id}\`\n` +
-            (inviter ? `📨 **Пригласил:** ${inviter} (всего: **${totalInvites}**)` : `📨 **Пригласил:** Vanity URL / Discovery`)
+            (inviter ? `📨 **Пригласил:** ${inviter} (всего: **${totalInvites}**)` : ``)
           )
           .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 1024 }))
           .setFooter({ text: `Winter Team • ${new Date().toLocaleDateString('ru-RU')}` })
@@ -331,7 +357,6 @@ client.on('inviteCreate', async (invite) => {
   const guildInvites = invites.get(invite.guild.id) || new Collection();
   guildInvites.set(invite.code, invite);
   invites.set(invite.guild.id, guildInvites);
-  console.log(`📨 Новое приглашение: ${invite.code} от ${invite.inviter?.tag}`);
 });
 
 client.on('inviteDelete', async (invite) => {
@@ -551,7 +576,7 @@ async function restoreChannel(guild, channelData) {
   }
 }
 
-// ========== ЗАЩИТА ОТ СНОСА ==========
+// ========== ЗАЩИТА ОТ СНОСА (С УВЕДОМЛЕНИЕМ АДМИНАМ И КНОПКОЙ СНЯТИЯ) ==========
 client.on('channelDelete', async (channel) => {
   try {
     if (channel.type === ChannelType.DM || !channel.guild) return;
@@ -598,12 +623,24 @@ client.on('channelDelete', async (channel) => {
     if (userLog.count >= 3 && (now - userLog.firstDeleteTime) <= 10000) {
       console.log(`🚨 АНТИ-СНОС: ${executor.tag} удалил ${userLog.count} каналов за 10 секунд!`);
       
+      // Выдаём таймаут на 24 часа
       try {
         await executor.timeout(24 * 60 * 60 * 1000, 'Анти-снос: массовое удаление каналов');
+        console.log(`✅ ${executor.tag} получил таймаут на 24 часа`);
+        
+        // Сохраняем информацию о таймауте
+        timedOutUsers.set(executor.id, {
+          userId: executor.id,
+          userTag: executor.tag,
+          guildId: guild.id,
+          timeoutEnd: Date.now() + 24 * 60 * 60 * 1000
+        });
+        
       } catch (error) {
         console.error('❌ Ошибка тайм-аута:', error);
       }
       
+      // Восстанавливаем удалённые каналы
       let restoredCount = 0;
       for (const [chId, chData] of deletedChannels) {
         const restored = await restoreChannel(guild, chData);
@@ -612,13 +649,52 @@ client.on('channelDelete', async (channel) => {
       
       channelDeleteLog.delete(executor.id);
       
+      // Отправляем уведомление ВСЕМ админам в ЛС с кнопкой снятия таймаута
+      const admins = guild.members.cache.filter(m => 
+        m.permissions.has(PermissionFlagsBits.Administrator) && !m.user.bot
+      );
+      
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`remove_timeout_${executor.id}`)
+          .setLabel('🔓 Снять таймаут')
+          .setStyle(ButtonStyle.Success)
+      );
+      
+      const alertEmbed = new EmbedBuilder()
+        .setTitle('🚨 ВНИМАНИЕ! АТАКА НА СЕРВЕР!')
+        .setColor(0xFF0000)
+        .setDescription(
+          `**Обнаружена попытка сноса сервера!**\n\n` +
+          `**Нарушитель:** ${executor.tag} (${executor.id})\n` +
+          `**Удалено каналов:** ${userLog.count}\n` +
+          `**Восстановлено каналов:** ${restoredCount}\n\n` +
+          `**Принятые меры:**\n` +
+          `✅ Нарушитель получил таймаут на 24 часа\n` +
+          `✅ Все удалённые каналы восстановлены\n\n` +
+          `Нажмите кнопку ниже чтобы снять таймаут с нарушителя.`
+        )
+        .setFooter({ text: `Анти-снос система • ${new Date().toLocaleString('ru-RU')}` })
+        .setTimestamp();
+      
+      for (const admin of admins.values()) {
+        try {
+          await admin.send({ embeds: [alertEmbed], components: [row] });
+          console.log(`📨 Уведомление отправлено админу ${admin.user.tag}`);
+        } catch (e) {
+          console.log(`⚠️ Не удалось отправить ЛС админу ${admin.user.tag}`);
+        }
+      }
+      
+      // Лог в канал логов
       const logEmbed = new EmbedBuilder()
         .setTitle('🚨 АНТИ-СНОС АКТИВИРОВАН')
         .setColor(0xFF0000)
         .addFields(
           { name: '👤 Нарушитель', value: `${executor.tag} (${executor.id})`, inline: true },
           { name: '🗑️ Удалено', value: `${userLog.count}`, inline: true },
-          { name: '🔄 Восстановлено', value: `${restoredCount}`, inline: true }
+          { name: '🔄 Восстановлено', value: `${restoredCount}`, inline: true },
+          { name: '⏰ Наказание', value: 'Таймаут 24 часа', inline: true }
         )
         .setTimestamp();
       
@@ -644,16 +720,13 @@ client.once('ready', async () => {
   const guild = client.guilds.cache.get(cfg.guildId);
   
   if (guild) {
-    // Загружаем приглашения
     try {
       const guildInvites = await guild.invites.fetch();
       invites.set(guild.id, new Collection(guildInvites.map(invite => [invite.code, invite])));
       console.log(`✅ Загружено ${guildInvites.size} приглашений`);
     } catch (error) {}
     
-    // СОХРАНЯЕМ ВСЕ КАНАЛЫ ПРИ ЗАПУСКЕ
     await saveAllChannels(guild);
-    
     await cleanupOldChannels(guild);
     console.log(`📊 Сервер: ${guild.name} | Участников: ${guild.memberCount}`);
   }
@@ -697,6 +770,55 @@ client.on('interactionCreate', async interaction => {
                    interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
   
   const isAdmin = interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
+  
+  // ========== КНОПКА СНЯТИЯ ТАЙМАУТА ==========
+  if (interaction.isButton() && interaction.customId.startsWith('remove_timeout_')) {
+    if (!isAdmin) {
+      return interaction.reply({ content: '❌ Только для администраторов!', ephemeral: true });
+    }
+    
+    const targetUserId = interaction.customId.replace('remove_timeout_', '');
+    
+    try {
+      const guild = interaction.guild || client.guilds.cache.get(cfg.guildId);
+      const member = await guild.members.fetch(targetUserId).catch(() => null);
+      
+      if (!member) {
+        return interaction.reply({ content: '❌ Участник не найден на сервере!', ephemeral: true });
+      }
+      
+      if (!member.communicationDisabledUntil) {
+        return interaction.reply({ content: '❌ У этого участника нет активного таймаута!', ephemeral: true });
+      }
+      
+      await member.timeout(null, `Таймаут снят администратором ${interaction.user.tag}`);
+      
+      timedOutUsers.delete(targetUserId);
+      
+      const embed = new EmbedBuilder()
+        .setTitle('✅ ТАЙМАУТ СНЯТ')
+        .setColor(0x00FF00)
+        .setDescription(`Таймаут с участника **${member.user.tag}** успешно снят.`)
+        .setTimestamp();
+      
+      await interaction.update({ embeds: [embed], components: [] });
+      
+      const logEmbed = new EmbedBuilder()
+        .setTitle('🔓 Таймаут снят')
+        .setColor(0x00FF00)
+        .addFields(
+          { name: '👤 Участник', value: `${member.user.tag} (${member.user.id})`, inline: true },
+          { name: '👮 Админ', value: `<@${interaction.user.id}>`, inline: true }
+        )
+        .setTimestamp();
+      
+      await sendLog(guild, logEmbed);
+      
+    } catch (error) {
+      console.error('❌ Ошибка снятия таймаута:', error);
+      await interaction.reply({ content: `❌ Ошибка: ${error.message}`, ephemeral: true });
+    }
+  }
   
   // ========== /save_channels ==========
   if (interaction.isCommand() && interaction.commandName === 'save_channels') {
@@ -1465,7 +1587,7 @@ http.createServer((req, res) => {
     <body style="font-family: Arial; text-align: center; padding: 50px;">
       <h1>✅ Winter Team Bot работает!</h1>
       <p>🛡️ Удалённых в памяти: ${deletedChannels.size}</p>
-      <p>💾 Бэкап: ${backup ? `${backup.totalChannels} каналов от ${new Date(backup.savedAt).toLocaleString('ru-RU')}` : 'не создан'}</p>
+      <p>💾 Бэкап: ${backup ? `${backup.totalChannels} каналов` : 'не создан'}</p>
       <p>⏰ Время работы: ${getUptime()}</p>
     </body>
     </html>
