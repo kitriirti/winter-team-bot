@@ -14,13 +14,12 @@ const client = new Client({
 });
 
 // ========== ХРАНИЛИЩА В ПАМЯТИ ==========
-const channelDeleteLog = new Collection(); // userId -> { count, firstDeleteTime }
-const deletedChannels = new Collection(); // channelId -> { данные канала }
-const activeTickets = new Collection(); // ticketId -> { данные тикета }
-const autoDeleteTimeouts = new Collection(); // ticketId -> timeout
-const pendingSends = new Collection(); // userId -> { данные для send }
-
-let staffStats = new Collection(); // staffId -> { accepted, tag }
+const channelDeleteLog = new Collection();
+const deletedChannels = new Collection();
+const activeTickets = new Collection();
+const autoDeleteTimeouts = new Collection();
+const pendingSends = new Collection();
+let staffStats = new Collection();
 
 // ========== ПЕРЕМЕННЫЕ СОСТОЯНИЯ ==========
 let ticketStatus = { stack1: true, stack2: true };
@@ -30,7 +29,6 @@ let stats = {
   stack2: { accepted: 0, denied: 0, autoDenied: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() }
 };
 
-// Проверка сброса недельной статистики
 const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
 if (stats.stack1.weekStart < weekAgo) {
   stats.stack1.weekAccepted = 0;
@@ -43,7 +41,6 @@ if (stats.stack2.weekStart < weekAgo) {
   stats.stack2.weekStart = Date.now();
 }
 
-// Очистка лога удалений каждые 10 секунд (анти-снос)
 setInterval(() => {
   const now = Date.now();
   for (const [userId, data] of channelDeleteLog) {
@@ -63,11 +60,112 @@ const getConfig = () => {
     staffRoleId_stack1: process.env.STAFF_ROLE_STACK1,
     staffRoleId_stack2: process.env.STAFF_ROLE_STACK2,
     logChannelId: process.env.LOG_CHANNEL_ID,
-    memberRoleId: process.env.MEMBER_ROLE_ID
+    memberRoleId: process.env.MEMBER_ROLE_ID,
+    welcomeChannelId: process.env.WELCOME_CHANNEL_ID,  // НОВОЕ: канал для приветствий
+    autoRoleId: process.env.AUTO_ROLE_ID               // НОВОЕ: роль при заходе
   };
 };
 
-// ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+// ========== ПРИВЕТСТВИЕ НОВЫХ УЧАСТНИКОВ ==========
+client.on('guildMemberAdd', async (member) => {
+  try {
+    const cfg = getConfig();
+    
+    // Выдача роли при заходе
+    if (cfg.autoRoleId) {
+      try {
+        await member.roles.add(cfg.autoRoleId);
+        console.log(`✅ Роль выдана участнику ${member.user.tag}`);
+      } catch (error) {
+        console.error(`❌ Ошибка выдачи роли ${member.user.tag}:`, error);
+      }
+    }
+    
+    // Отправка приветствия в указанный канал
+    if (cfg.welcomeChannelId) {
+      const welcomeChannel = await member.guild.channels.fetch(cfg.welcomeChannelId).catch(() => null);
+      
+      if (welcomeChannel) {
+        const embed = new EmbedBuilder()
+          .setColor(0x00FF00)
+          .setTitle('👋 НОВЫЙ УЧАСТНИК!')
+          .setDescription(`**${member.user.tag}** присоединился к серверу!`)
+          .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 1024 }))
+          .addFields(
+            { name: '📅 Аккаунт создан', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:D>`, inline: true },
+            { name: '👤 ID', value: member.user.id, inline: true },
+            { name: '🔢 Участник №', value: `${member.guild.memberCount}`, inline: true }
+          )
+          .setFooter({ text: `Добро пожаловать, ${member.user.username}!` })
+          .setTimestamp();
+        
+        await welcomeChannel.send({ 
+          content: `**Привет, ${member.user}! 🎉** Добро пожаловать на сервер **${member.guild.name}**!`,
+          embeds: [embed] 
+        });
+        
+        console.log(`👋 Приветствие отправлено для ${member.user.tag}`);
+      } else {
+        console.log(`⚠️ Канал приветствий (${cfg.welcomeChannelId}) не найден`);
+      }
+    }
+    
+    // Логирование в канал логов
+    if (cfg.logChannelId) {
+      const logChannel = await member.guild.channels.fetch(cfg.logChannelId).catch(() => null);
+      
+      if (logChannel) {
+        const logEmbed = new EmbedBuilder()
+          .setColor(0x00FF00)
+          .setTitle('📥 УЧАСТНИК ЗАШЁЛ')
+          .setDescription(`**${member.user.tag}** (${member.user.id})`)
+          .addFields(
+            { name: '📅 Аккаунт создан', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:D>`, inline: true },
+            { name: '🔢 Всего участников', value: `${member.guild.memberCount}`, inline: true }
+          )
+          .setTimestamp();
+        
+        await logChannel.send({ embeds: [logEmbed] });
+      }
+    }
+    
+  } catch (error) {
+    console.error('❌ Ошибка в guildMemberAdd:', error);
+  }
+});
+
+// ========== ПРОЩАНИЕ С УЧАСТНИКОМ ==========
+client.on('guildMemberRemove', async (member) => {
+  try {
+    const cfg = getConfig();
+    
+    if (cfg.logChannelId) {
+      const logChannel = await member.guild.channels.fetch(cfg.logChannelId).catch(() => null);
+      
+      if (logChannel) {
+        const logEmbed = new EmbedBuilder()
+          .setColor(0xFF0000)
+          .setTitle('📤 УЧАСТНИК ВЫШЕЛ')
+          .setDescription(`**${member.user.tag}** (${member.user.id})`)
+          .addFields(
+            { name: '📅 Был на сервере с', value: member.joinedAt ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:D>` : 'Неизвестно', inline: true },
+            { name: '🔢 Осталось участников', value: `${member.guild.memberCount}`, inline: true }
+          )
+          .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
+          .setTimestamp();
+        
+        await logChannel.send({ embeds: [logEmbed] });
+      }
+    }
+    
+    console.log(`👋 Участник ${member.user.tag} покинул сервер`);
+    
+  } catch (error) {
+    console.error('❌ Ошибка в guildMemberRemove:', error);
+  }
+});
+
+// ========== ОСТАЛЬНЫЕ ФУНКЦИИ (без изменений) ==========
 function getWorkingHoursMessage() {
   const now = new Date();
   const mskHour = (now.getUTCHours() + 3) % 24;
@@ -369,6 +467,7 @@ client.once('ready', async () => {
   
   if (guild) {
     await cleanupOldChannels(guild);
+    console.log(`📊 Сервер: ${guild.name} | Участников: ${guild.memberCount}`);
   }
   
   try {
@@ -795,7 +894,6 @@ client.on('interactionCreate', async interaction => {
   if (interaction.isButton()) {
     const id = interaction.customId;
     
-    // Закрытие тикета
     if (id.startsWith('close_')) {
       const channelId = id.split('_')[1];
       if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
@@ -827,7 +925,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
     
-    // Принятие заявки
     if (id.startsWith('accept_')) {
       const [_, userId, stack] = id.split('_');
       
@@ -872,7 +969,6 @@ client.on('interactionCreate', async interaction => {
       await sendLog(interaction.guild, logEmbed);
     }
     
-    // На рассмотрении
     if (id.startsWith('consider_')) {
       const [_, userId, stack] = id.split('_');
       
@@ -894,7 +990,6 @@ client.on('interactionCreate', async interaction => {
       await sendLog(interaction.guild, logEmbed);
     }
     
-    // Обзвон
     if (id.startsWith('call_')) {
       const [_, userId, stack] = id.split('_');
       
@@ -918,7 +1013,6 @@ client.on('interactionCreate', async interaction => {
       await sendLog(interaction.guild, logEmbed);
     }
     
-    // Отклонение
     if (id.startsWith('deny_')) {
       const [_, userId, stack] = id.split('_');
       
@@ -941,7 +1035,6 @@ client.on('interactionCreate', async interaction => {
     }
   }
   
-  // ========== ОБРАБОТКА ПРИЧИНЫ ОТКЛОНЕНИЯ ==========
   if (interaction.isModalSubmit() && interaction.customId.startsWith('deny_reason_')) {
     const [_, userId, stack, channelId] = interaction.customId.split('_');
     const reason = interaction.fields.getTextInputValue('reason');
