@@ -15,7 +15,8 @@ const client = new Client({
 });
 
 // ========== ХРАНИЛИЩА В ПАМЯТИ ==========
-const savedChannels = new Collection();
+const globalBackup = new Collection(); // ГЛОБАЛЬНЫЙ БЭКАП (доступен с любого сервера)
+const deletedChannels = new Collection();
 const activeTickets = new Collection();
 const autoDeleteTimeouts = new Collection();
 const timedOutUsers = new Collection();
@@ -35,7 +36,6 @@ const startTime = Date.now();
 const getConfig = () => {
   return {
     token: process.env.DISCORD_TOKEN,
-    guildId: process.env.GUILD_ID,
     ticketCategory: process.env.TICKET_CATEGORY,
     staffRoleId_stack1: process.env.STAFF_ROLE_STACK1,
     staffRoleId_stack2: process.env.STAFF_ROLE_STACK2,
@@ -172,14 +172,12 @@ async function createTicketMessage(channel, stackType) {
 }
 
 function isTicketChannel(channel) {
-  const cfg = getConfig();
   if (channel.name.startsWith('🔥｜') || channel.name.startsWith('💧｜')) return true;
-  if (cfg.ticketCategory && channel.parentId === cfg.ticketCategory) return true;
   return false;
 }
 
-// ========== СОХРАНЕНИЕ СТРУКТУРЫ КАНАЛОВ ==========
-async function saveAllChannels(guild) {
+// ========== СОХРАНЕНИЕ СТРУКТУРЫ КАНАЛОВ В ГЛОБАЛЬНУЮ ПАМЯТЬ ==========
+async function saveToGlobalBackup(guild) {
   try {
     const categories = [];
     const standaloneChannels = [];
@@ -223,50 +221,36 @@ async function saveAllChannels(guild) {
     }
     
     const backupData = {
-      guildName: guild.name,
-      exportedAt: new Date().toISOString(),
+      sourceGuildId: guild.id,
+      sourceGuildName: guild.name,
+      savedAt: new Date().toISOString(),
+      savedBy: 'global_backup',
       categories: categories,
       standaloneChannels: standaloneChannels,
       totalChannels: categories.reduce((acc, cat) => acc + cat.channels.length, 0) + standaloneChannels.length
     };
     
-    savedChannels.set('full_backup', backupData);
-    console.log(`💾 Сохранено: ${categories.length} категорий, ${backupData.totalChannels} каналов`);
+    // Сохраняем в глобальную память (доступно с любого сервера)
+    globalBackup.set('last_backup', backupData);
+    
+    console.log(`🌍 ГЛОБАЛЬНЫЙ БЭКАП сохранён: ${categories.length} категорий, ${backupData.totalChannels} каналов`);
+    console.log(`📋 Сервер-источник: ${guild.name}`);
+    
     return backupData;
   } catch (error) {
-    console.error('❌ Ошибка сохранения:', error);
+    console.error('❌ Ошибка сохранения в глобальный бэкап:', error);
     return null;
   }
 }
 
-// ========== ЭКСПОРТ БЭКАПА (ОТПРАВЛЯЕТ JSON В ЧАТ) ==========
-async function exportBackup(interaction) {
+// ========== ВОССТАНОВЛЕНИЕ ИЗ ГЛОБАЛЬНОГО БЭКАПА ==========
+async function restoreFromGlobalBackup(guild) {
   try {
-    const backupData = await saveAllChannels(interaction.guild);
+    const backupData = globalBackup.get('last_backup');
     
     if (!backupData) {
-      return { success: false, error: 'Не удалось создать бэкап' };
+      return { success: false, error: '❌ Глобальный бэкап не создан! Сначала используйте /save_backup на сервере-источнике.' };
     }
-    
-    // Конвертируем в JSON строку
-    const jsonString = JSON.stringify(backupData, null, 2);
-    
-    // Разбиваем на части если слишком большой (Discord лимит 2000 символов)
-    const chunks = [];
-    for (let i = 0; i < jsonString.length; i += 1900) {
-      chunks.push(jsonString.slice(i, i + 1900));
-    }
-    
-    return { success: true, chunks, backupData };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-}
-
-// ========== ИМПОРТ БЭКАПА (СОЗДАЁТ КАНАЛЫ ИЗ JSON) ==========
-async function importBackup(guild, jsonString) {
-  try {
-    const backupData = JSON.parse(jsonString);
     
     let createdCategories = 0;
     let createdChannels = 0;
@@ -275,7 +259,6 @@ async function importBackup(guild, jsonString) {
     // Создаём категории
     for (const cat of backupData.categories) {
       try {
-        // Проверяем, нет ли уже категории с таким именем
         const existing = guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && c.name === cat.name);
         if (!existing) {
           const newCategory = await guild.channels.create({
@@ -286,7 +269,7 @@ async function importBackup(guild, jsonString) {
           categoryMap.set(cat.name, newCategory.id);
           createdCategories++;
           console.log(`📁 Создана категория: ${cat.name}`);
-          await new Promise(resolve => setTimeout(resolve, 500)); // Задержка чтобы не спамить API
+          await new Promise(resolve => setTimeout(resolve, 500));
         } else {
           categoryMap.set(cat.name, existing.id);
           console.log(`📁 Категория уже существует: ${cat.name}`);
@@ -302,7 +285,6 @@ async function importBackup(guild, jsonString) {
         try {
           const parentId = categoryMap.get(ch.parentName);
           
-          // Проверяем, нет ли уже канала с таким именем в этой категории
           const existing = guild.channels.cache.find(c => c.name === ch.name && c.parentId === parentId);
           if (!existing) {
             if (ch.type === 'text') {
@@ -373,8 +355,8 @@ async function importBackup(guild, jsonString) {
       success: true, 
       categories: createdCategories, 
       channels: createdChannels,
-      totalCategories: backupData.categories.length,
-      totalChannels: backupData.totalChannels
+      sourceGuildName: backupData.sourceGuildName,
+      savedAt: backupData.savedAt
     };
   } catch (error) {
     return { success: false, error: error.message };
@@ -461,15 +443,11 @@ client.on('channelDelete', async (channel) => {
       deletedAt: new Date()
     };
     
-    if (!savedChannels.has('deleted_channels')) {
-      savedChannels.set('deleted_channels', new Collection());
-    }
-    const deletedCollection = savedChannels.get('deleted_channels');
-    deletedCollection.set(channel.id, channelData);
+    deletedChannels.set(channel.id, channelData);
     
-    if (deletedCollection.size > 50) {
-      const firstKey = deletedCollection.keys().next().value;
-      deletedCollection.delete(firstKey);
+    if (deletedChannels.size > 50) {
+      const firstKey = deletedChannels.keys().next().value;
+      deletedChannels.delete(firstKey);
     }
     
     if (executor && 
@@ -485,8 +463,7 @@ client.on('channelDelete', async (channel) => {
           userId: executor.id,
           userTag: executor.tag,
           guildId: guild.id,
-          timeoutEnd: Date.now() + 24 * 60 * 60 * 1000,
-          deletedChannel: channelData
+          timeoutEnd: Date.now() + 24 * 60 * 60 * 1000
         });
         
         const admins = guild.members.cache.filter(m => 
@@ -586,27 +563,21 @@ client.on('inviteDelete', async (invite) => {
 // ========== ЗАПУСК БОТА ==========
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} запущен!`);
+  console.log(`🌍 ГЛОБАЛЬНЫЙ БЭКАП АКТИВЕН (сохраняется в памяти бота)`);
+  console.log(`📋 Серверов: ${client.guilds.cache.size}`);
   
   setInterval(() => {
-    client.user.setActivity(`🛡️ ${getUptimeShort()}`, { type: 3 });
+    client.user.setActivity(`🌍 ${getUptimeShort()}`, { type: 3 });
   }, 60000);
   
-  client.user.setActivity(`🛡️ ${getUptimeShort()}`, { type: 3 });
+  client.user.setActivity(`🌍 ${getUptimeShort()}`, { type: 3 });
   
-  const cfg = getConfig();
-  const guild = client.guilds.cache.get(cfg.guildId);
-  
-  if (guild) {
+  client.guilds.cache.forEach(async (guild) => {
     try {
       const guildInvites = await guild.invites.fetch();
       invites.set(guild.id, new Collection(guildInvites.map(invite => [invite.code, invite])));
-      console.log(`✅ Загружено ${guildInvites.size} приглашений`);
     } catch (error) {}
-    
-    await saveAllChannels(guild);
-    
-    console.log(`📊 Сервер: ${guild.name} | Участников: ${guild.memberCount}`);
-  }
+  });
   
   try {
     await client.application.commands.set([
@@ -625,13 +596,9 @@ client.once('ready', async () => {
       },
       { name: 'unbanall', description: 'Разбанить всех забаненных участников (только для админа)' },
       { name: 'invites', description: 'Показать топ пригласивших' },
-      { name: 'save_channels', description: 'Сохранить структуру каналов в память (админ)' },
-      { name: 'export_backup', description: '📤 Экспортировать структуру каналов в JSON (скопируйте код)' },
-      { name: 'import_backup', description: '📥 Импортировать каналы из JSON кода',
-        options: [
-          { name: 'json', description: 'JSON код из команды /export_backup', type: 3, required: true }
-        ]
-      },
+      { name: 'save_backup', description: '💾 Сохранить структуру каналов в ГЛОБАЛЬНЫЙ бэкап (админ)' },
+      { name: 'restore_backup', description: '📥 Восстановить каналы из ГЛОБАЛЬНОГО бэкапа (админ)' },
+      { name: 'backup_info', description: 'ℹ️ Показать информацию о глобальном бэкапе (админ)' },
       { name: 'deleted_list', description: 'Показать список недавно удалённых каналов (админ)' }
     ]);
     
@@ -649,82 +616,106 @@ client.on('interactionCreate', async interaction => {
                    interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
   const isAdmin = interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
   
-  // ========== /export_backup ==========
-  if (interaction.isCommand() && interaction.commandName === 'export_backup') {
+  // ========== /save_backup - Сохранить в глобальный бэкап ==========
+  if (interaction.isCommand() && interaction.commandName === 'save_backup') {
     if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
     
     await interaction.deferReply({ ephemeral: true });
     
     try {
-      const result = await exportBackup(interaction);
+      const backupData = await saveToGlobalBackup(interaction.guild);
       
-      if (result.success) {
-        // Отправляем JSON по частям
-        for (let i = 0; i < result.chunks.length; i++) {
-          const chunk = result.chunks[i];
-          const part = i + 1;
-          const total = result.chunks.length;
-          
-          await interaction.followUp({
-            content: `📤 **Часть ${part}/${total}**\n\`\`\`json\n${chunk}\n\`\`\``,
-            ephemeral: true
-          });
-        }
-        
+      if (backupData) {
         const embed = new EmbedBuilder()
-          .setTitle('✅ ЭКСПОРТ ВЫПОЛНЕН')
+          .setTitle('🌍 ГЛОБАЛЬНЫЙ БЭКАП СОХРАНЁН')
           .setColor(0x00FF00)
           .setDescription(
-            `**Сервер:** ${result.backupData.guildName}\n` +
-            `**Категорий:** ${result.backupData.categories.length}\n` +
-            `**Каналов:** ${result.backupData.totalChannels}\n\n` +
-            `**📋 ИНСТРУКЦИЯ ПО ПЕРЕНОСУ:**\n` +
-            `1. Скопируйте ВЕСЬ JSON код из сообщений выше\n` +
-            `2. Объедините все части в один текст\n` +
-            `3. На другом сервере используйте:\n` +
-            `   \`/import_backup json: <вставьте JSON>\`\n\n` +
-            `⚠️ Важно: JSON должен быть без разрывов!`
+            `**Сервер-источник:** ${backupData.sourceGuildName}\n` +
+            `**Категорий:** ${backupData.categories.length}\n` +
+            `**Каналов:** ${backupData.totalChannels}\n` +
+            `**Сохранено:** ${new Date(backupData.savedAt).toLocaleString('ru-RU')}\n\n` +
+            `✅ **Теперь на ЛЮБОМ сервере используйте:**\n` +
+            `\`/restore_backup\` — чтобы создать эти каналы!`
           )
           .setTimestamp();
         
-        await interaction.followUp({ embeds: [embed], ephemeral: true });
+        await interaction.editReply({ embeds: [embed] });
       } else {
-        await interaction.editReply({ content: `❌ ${result.error}` });
+        await interaction.editReply({ content: '❌ Ошибка сохранения бэкапа!' });
       }
     } catch (error) {
       await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
     }
   }
   
-  // ========== /import_backup ==========
-  if (interaction.isCommand() && interaction.commandName === 'import_backup') {
+  // ========== /restore_backup - Восстановить из глобального бэкапа ==========
+  if (interaction.isCommand() && interaction.commandName === 'restore_backup') {
     if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
     
-    const jsonInput = interaction.options.getString('json');
+    const backupData = globalBackup.get('last_backup');
+    
+    if (!backupData) {
+      return interaction.reply({ 
+        content: '❌ Глобальный бэкап не создан!\n\nСначала на сервере-источнике используйте `/save_backup`', 
+        ephemeral: true 
+      });
+    }
     
     await interaction.deferReply({ ephemeral: true });
     
     try {
-      const result = await importBackup(interaction.guild, jsonInput);
+      const result = await restoreFromGlobalBackup(interaction.guild);
       
       if (result.success) {
         const embed = new EmbedBuilder()
-          .setTitle('✅ ИМПОРТ ВЫПОЛНЕН')
+          .setTitle('✅ КАНАЛЫ ВОССТАНОВЛЕНЫ ИЗ ГЛОБАЛЬНОГО БЭКАПА')
           .setColor(0x00FF00)
           .setDescription(
-            `**Категорий создано:** ${result.categories} / ${result.totalCategories}\n` +
-            `**Каналов создано:** ${result.channels} / ${result.totalChannels}\n\n` +
+            `**Сервер-источник:** ${result.sourceGuildName}\n` +
+            `**Бэкап от:** ${new Date(result.savedAt).toLocaleString('ru-RU')}\n\n` +
+            `**Категорий создано:** ${result.categories}\n` +
+            `**Каналов создано:** ${result.channels}\n\n` +
             `⚠️ Существующие каналы пропущены.`
           )
           .setTimestamp();
         
         await interaction.editReply({ embeds: [embed] });
       } else {
-        await interaction.editReply({ content: `❌ Ошибка импорта: ${result.error}` });
+        await interaction.editReply({ content: result.error });
       }
     } catch (error) {
       await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
     }
+  }
+  
+  // ========== /backup_info - Информация о глобальном бэкапе ==========
+  if (interaction.isCommand() && interaction.commandName === 'backup_info') {
+    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
+    
+    const backupData = globalBackup.get('last_backup');
+    
+    if (!backupData) {
+      return interaction.reply({ 
+        content: '❌ Глобальный бэкап не создан!\n\nИспользуйте `/save_backup` на сервере-источнике.', 
+        ephemeral: true 
+      });
+    }
+    
+    const embed = new EmbedBuilder()
+      .setTitle('🌍 ИНФОРМАЦИЯ О ГЛОБАЛЬНОМ БЭКАПЕ')
+      .setColor(0x3498DB)
+      .setDescription(
+        `**Сервер-источник:** ${backupData.sourceGuildName}\n` +
+        `**ID сервера:** ${backupData.sourceGuildId}\n` +
+        `**Сохранён:** ${new Date(backupData.savedAt).toLocaleString('ru-RU')}\n` +
+        `**Категорий:** ${backupData.categories.length}\n` +
+        `**Каналов всего:** ${backupData.totalChannels}\n\n` +
+        `**Доступные команды:**\n` +
+        `\`/restore_backup\` — восстановить на этом сервере`
+      )
+      .setTimestamp();
+    
+    await interaction.reply({ embeds: [embed], ephemeral: true });
   }
   
   // ========== КНОПКА ВОССТАНОВЛЕНИЯ УДАЛЁННОГО КАНАЛА ==========
@@ -732,13 +723,7 @@ client.on('interactionCreate', async interaction => {
     if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
     
     const channelId = interaction.customId.replace('restore_deleted_', '');
-    const deletedCollection = savedChannels.get('deleted_channels');
-    
-    if (!deletedCollection) {
-      return interaction.reply({ content: '❌ Нет сохранённых удалённых каналов!', ephemeral: true });
-    }
-    
-    const channelData = deletedCollection.get(channelId);
+    const channelData = deletedChannels.get(channelId);
     
     if (!channelData) {
       return interaction.reply({ content: '❌ Данные канала не найдены!', ephemeral: true });
@@ -750,7 +735,7 @@ client.on('interactionCreate', async interaction => {
       const restored = await restoreChannel(interaction.guild, channelData);
       
       if (restored) {
-        deletedCollection.delete(channelId);
+        deletedChannels.delete(channelId);
         
         const embed = new EmbedBuilder()
           .setTitle('✅ КАНАЛ ВОССТАНОВЛЕН')
@@ -771,13 +756,11 @@ client.on('interactionCreate', async interaction => {
   if (interaction.isCommand() && interaction.commandName === 'deleted_list') {
     if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
     
-    const deletedCollection = savedChannels.get('deleted_channels');
-    
-    if (!deletedCollection || deletedCollection.size === 0) {
+    if (deletedChannels.size === 0) {
       return interaction.reply({ content: '📭 Нет удалённых каналов в памяти', ephemeral: true });
     }
     
-    const channels = Array.from(deletedCollection.values());
+    const channels = Array.from(deletedChannels.values());
     const list = channels.slice(0, 20).map((ch, i) => 
       `**${i + 1}.** ${ch.type === 'text' ? '💬' : ch.type === 'voice' ? '🔊' : '📁'} **${ch.name}** — ${new Date(ch.deletedAt).toLocaleTimeString('ru-RU')}`
     ).join('\n');
@@ -786,7 +769,7 @@ client.on('interactionCreate', async interaction => {
       .setTitle('🗑️ НЕДАВНО УДАЛЁННЫЕ КАНАЛЫ')
       .setColor(0xFFA500)
       .setDescription(list || 'Нет данных')
-      .setFooter({ text: `Всего: ${deletedCollection.size} каналов` });
+      .setFooter({ text: `Всего: ${deletedChannels.size} каналов` });
     
     await interaction.reply({ embeds: [embed], ephemeral: true });
   }
@@ -798,8 +781,7 @@ client.on('interactionCreate', async interaction => {
     const targetUserId = interaction.customId.replace('remove_timeout_', '');
     
     try {
-      const guild = interaction.guild || client.guilds.cache.get(cfg.guildId);
-      const member = await guild.members.fetch(targetUserId).catch(() => null);
+      const member = await interaction.guild.members.fetch(targetUserId).catch(() => null);
       
       if (!member) return interaction.reply({ content: '❌ Участник не найден!', ephemeral: true });
       if (!member.communicationDisabledUntil) return interaction.reply({ content: '❌ Нет таймаута!', ephemeral: true });
@@ -821,8 +803,12 @@ client.on('interactionCreate', async interaction => {
   
   // ========== /ping ==========
   if (interaction.isCommand() && interaction.commandName === 'ping') {
+    const backup = globalBackup.get('last_backup');
     const sent = await interaction.reply({ content: '🏓 Пинг...', fetchReply: true });
-    await interaction.editReply({ content: `🏓 Понг! **${sent.createdTimestamp - interaction.createdTimestamp}ms** | API: **${client.ws.ping}ms**` });
+    await interaction.editReply({ 
+      content: `🏓 Понг! **${sent.createdTimestamp - interaction.createdTimestamp}ms** | API: **${client.ws.ping}ms**\n` +
+               `🌍 Глобальный бэкап: ${backup ? `${backup.sourceGuildName} (${backup.totalChannels} каналов)` : 'не создан'}`
+    });
   }
   
   // ========== /uptime ==========
@@ -834,23 +820,6 @@ client.on('interactionCreate', async interaction => {
       .addFields({ name: '📅 Запущен', value: `<t:${Math.floor(startTime / 1000)}:F>`, inline: true });
     
     await interaction.reply({ embeds: [embed] });
-  }
-  
-  // ========== /save_channels ==========
-  if (interaction.isCommand() && interaction.commandName === 'save_channels') {
-    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
-    
-    await interaction.deferReply({ ephemeral: true });
-    const backupData = await saveAllChannels(interaction.guild);
-    
-    if (backupData) {
-      const embed = new EmbedBuilder()
-        .setTitle('💾 КАНАЛЫ СОХРАНЕНЫ')
-        .setColor(0x00FF00)
-        .setDescription(`**Категорий:** ${backupData.categories.length}\n**Каналов:** ${backupData.totalChannels}`);
-      
-      await interaction.editReply({ embeds: [embed] });
-    }
   }
   
   // ========== /invites ==========
@@ -1252,14 +1221,15 @@ client.login(token);
 // ========== HTTP СЕРВЕР ДЛЯ RENDER ==========
 http.createServer((req, res) => { 
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); 
+  const backup = globalBackup.get('last_backup');
   res.end(`
     <!DOCTYPE html>
     <html>
     <head><title>Winter Team Bot</title></head>
     <body style="font-family: Arial; text-align: center; padding: 50px;">
       <h1>✅ Winter Team Bot работает!</h1>
-      <p>📤 /export_backup - экспорт в JSON</p>
-      <p>📥 /import_backup - импорт из JSON</p>
+      <p>🌍 Глобальный бэкап: ${backup ? `${backup.sourceGuildName} (${backup.totalChannels} каналов)` : 'не создан'}</p>
+      <p>📋 Серверов: ${client.guilds.cache.size}</p>
       <p>⏰ Аптайм: ${getUptime()}</p>
     </body>
     </html>
