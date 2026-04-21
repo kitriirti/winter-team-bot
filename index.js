@@ -272,12 +272,10 @@ async function createTicketMessage(channel, stackType) {
 function isTicketChannel(channel) {
   const cfg = getConfig();
   
-  // Проверка по названию
   if (channel.name.startsWith('🔥｜') || channel.name.startsWith('💧｜')) {
     return true;
   }
   
-  // Проверка по категории
   if (cfg.ticketCategory && channel.parentId === cfg.ticketCategory) {
     return true;
   }
@@ -285,7 +283,7 @@ function isTicketChannel(channel) {
   return false;
 }
 
-// ========== СОХРАНЕНИЕ И ВОССТАНОВЛЕНИЕ КАНАЛОВ ==========
+// ========== СОХРАНЕНИЕ СТРУКТУРЫ КАНАЛОВ (БЕЗ ТИКЕТОВ) ==========
 async function saveAllChannels(guild) {
   try {
     savedChannels.clear();
@@ -293,7 +291,6 @@ async function saveAllChannels(guild) {
     const standaloneChannels = [];
     
     for (const channel of guild.channels.cache.values()) {
-      // Пропускаем тикет-каналы
       if (isTicketChannel(channel)) continue;
       
       if (channel.type === ChannelType.GuildCategory) {
@@ -305,7 +302,6 @@ async function saveAllChannels(guild) {
     }
     
     for (const channel of guild.channels.cache.values()) {
-      // Пропускаем тикет-каналы
       if (isTicketChannel(channel)) continue;
       
       if (channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildVoice) {
@@ -329,7 +325,7 @@ async function saveAllChannels(guild) {
     
     const backupData = {
       guildId: guild.id, guildName: guild.name, savedAt: new Date(),
-      categories, standaloneChannels, totalChannels: categories.length + standaloneChannels.length
+      categories, standaloneChannels, totalChannels: guild.channels.cache.size
     };
     
     savedChannels.set('full_backup', backupData);
@@ -341,6 +337,7 @@ async function saveAllChannels(guild) {
   }
 }
 
+// ========== ВОССТАНОВЛЕНИЕ ОДНОГО КАНАЛА ==========
 async function restoreChannel(guild, channelData) {
   try {
     let parentId = null;
@@ -374,15 +371,17 @@ async function restoreChannel(guild, channelData) {
   }
 }
 
+// ========== ВОССТАНОВЛЕНИЕ ИЗ БЭКАПА (ТОЛЬКО ПО КОМАНДЕ) ==========
 async function restoreFromBackup(guild) {
   try {
     const backupData = savedChannels.get('full_backup');
-    if (!backupData) return { success: false, error: 'Нет сохранённых данных!' };
+    if (!backupData) return { success: false, error: 'Нет сохранённых данных! Используйте /save_channels' };
     
     let createdCategories = 0;
     let createdChannels = 0;
     const categoryMap = new Map();
     
+    // Создаём категории
     for (const cat of backupData.categories) {
       try {
         const existing = guild.channels.cache.get(cat.id);
@@ -392,12 +391,16 @@ async function restoreFromBackup(guild) {
           });
           categoryMap.set(cat.id, newCategory.id);
           createdCategories++;
+          console.log(`📁 Восстановлена категория: ${cat.name}`);
         } else {
           categoryMap.set(cat.id, cat.id);
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error(`❌ Ошибка категории ${cat.name}:`, e);
+      }
     }
     
+    // Создаём каналы в категориях
     for (const cat of backupData.categories) {
       for (const ch of cat.channels) {
         try {
@@ -417,11 +420,15 @@ async function restoreFromBackup(guild) {
               });
             }
             createdChannels++;
+            console.log(`📋 Восстановлен канал: ${ch.name}`);
           }
-        } catch (e) {}
+        } catch (e) {
+          console.error(`❌ Ошибка канала ${ch.name}:`, e);
+        }
       }
     }
     
+    // Создаём каналы вне категорий
     for (const ch of backupData.standaloneChannels) {
       try {
         const existing = guild.channels.cache.get(ch.id);
@@ -438,8 +445,11 @@ async function restoreFromBackup(guild) {
             });
           }
           createdChannels++;
+          console.log(`📋 Восстановлен канал: ${ch.name}`);
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error(`❌ Ошибка канала ${ch.name}:`, e);
+      }
     }
     
     return { success: true, categories: createdCategories, channels: createdChannels };
@@ -448,16 +458,16 @@ async function restoreFromBackup(guild) {
   }
 }
 
-// ========== АНТИ-СНОС (ТИКЕТЫ НЕ ВОССТАНАВЛИВАЮТСЯ) ==========
+// ========== АНТИ-СНОС: ТОЛЬКО ТАЙМАУТ, БЕЗ АВТО-ВОССТАНОВЛЕНИЯ ==========
 client.on('channelDelete', async (channel) => {
   try {
     if (channel.type === ChannelType.DM || !channel.guild) return;
     
     const guild = channel.guild;
     
-    // 🔥 ПРОВЕРКА: ЭТО ТИКЕТ-КАНАЛ?
+    // Тикет-каналы игнорируем полностью
     if (isTicketChannel(channel)) {
-      console.log(`🎫 Тикет-канал "${channel.name}" удалён — НЕ восстанавливаем`);
+      console.log(`🎫 Тикет-канал "${channel.name}" удалён — игнорируем`);
       
       // Очищаем тикет из активных
       for (const [ticketId, ticket] of activeTickets) {
@@ -465,32 +475,15 @@ client.on('channelDelete', async (channel) => {
           clearTimeout(autoDeleteTimeouts.get(ticketId));
           activeTickets.delete(ticketId);
           autoDeleteTimeouts.delete(ticketId);
-          console.log(`🧹 Тикет ${ticketId} удалён из памяти`);
           break;
         }
       }
-      
-      // Логируем удаление тикета
-      const cfg = getConfig();
-      if (cfg.logChannelId) {
-        const logChannel = await guild.channels.fetch(cfg.logChannelId).catch(() => null);
-        if (logChannel) {
-          const embed = new EmbedBuilder()
-            .setTitle('🎫 ТИКЕТ УДАЛЁН')
-            .setColor(0x808080)
-            .setDescription(`Тикет-канал **${channel.name}** был удалён.`)
-            .setTimestamp();
-          
-          await logChannel.send({ embeds: [embed] }).catch(() => {});
-        }
-      }
-      
-      return; // НЕ ВОССТАНАВЛИВАЕМ!
+      return;
     }
     
-    // Дальше обычная логика анти-сноса для НЕ тикетов
     await new Promise(resolve => setTimeout(resolve, 1500));
     
+    // Получаем аудит-лог
     const auditLogs = await guild.fetchAuditLogs({ type: 12, limit: 10 });
     const deleteLog = auditLogs.entries.find(entry => 
       entry.target.id === channel.id && 
@@ -502,6 +495,7 @@ client.on('channelDelete', async (channel) => {
     console.log(`🗑️ Канал "${channel.name}" удалён!`);
     if (executor) console.log(`👤 Удалил: ${executor.tag}`);
     
+    // Сохраняем данные канала (на случай если админ захочет восстановить вручную)
     const channelData = {
       name: channel.name,
       type: channel.type === ChannelType.GuildText ? 'text' : 
@@ -513,11 +507,24 @@ client.on('channelDelete', async (channel) => {
       nsfw: channel.nsfw || false,
       rateLimitPerUser: channel.rateLimitPerUser || 0,
       bitrate: channel.bitrate || null,
-      userLimit: channel.userLimit || null
+      userLimit: channel.userLimit || null,
+      deletedAt: new Date()
     };
     
-    const restored = await restoreChannel(guild, channelData);
+    // Сохраняем в отдельную коллекцию удалённых каналов
+    if (!savedChannels.has('deleted_channels')) {
+      savedChannels.set('deleted_channels', new Collection());
+    }
+    const deletedCollection = savedChannels.get('deleted_channels');
+    deletedCollection.set(channel.id, channelData);
     
+    // Ограничиваем размер коллекции (храним последние 50 каналов)
+    if (deletedCollection.size > 50) {
+      const firstKey = deletedCollection.keys().next().value;
+      deletedCollection.delete(firstKey);
+    }
+    
+    // Если есть нарушитель и это НЕ админ/владелец — выдаём таймаут
     if (executor && 
         executor.id !== guild.ownerId && 
         !executor.permissions.has(PermissionFlagsBits.Administrator) &&
@@ -531,9 +538,11 @@ client.on('channelDelete', async (channel) => {
           userId: executor.id,
           userTag: executor.tag,
           guildId: guild.id,
-          timeoutEnd: Date.now() + 24 * 60 * 60 * 1000
+          timeoutEnd: Date.now() + 24 * 60 * 60 * 1000,
+          deletedChannel: channelData
         });
         
+        // Уведомление админам с кнопками
         const admins = guild.members.cache.filter(m => 
           m.permissions.has(PermissionFlagsBits.Administrator) && !m.user.bot
         );
@@ -542,18 +551,22 @@ client.on('channelDelete', async (channel) => {
           new ButtonBuilder()
             .setCustomId(`remove_timeout_${executor.id}`)
             .setLabel('🔓 Снять таймаут')
-            .setStyle(ButtonStyle.Success)
+            .setStyle(ButtonStyle.Success),
+          new ButtonBuilder()
+            .setCustomId(`restore_deleted_${channel.id}`)
+            .setLabel('🔄 Восстановить канал')
+            .setStyle(ButtonStyle.Primary)
         );
         
         const alertEmbed = new EmbedBuilder()
-          .setTitle('🚨 АНТИ-СНОС: ТАЙМАУТ ВЫДАН!')
+          .setTitle('🚨 АНТИ-СНОС: КАНАЛ УДАЛЁН!')
           .setColor(0xFF0000)
           .setDescription(
             `**Нарушитель:** ${executor.tag} (${executor.id})\n` +
             `**Удалённый канал:** ${channelData.name}\n` +
-            `**Восстановлен:** ${restored ? '✅ Да' : '❌ Нет'}\n\n` +
+            `**Тип:** ${channelData.type}\n\n` +
             `**Наказание:** Таймаут 24 часа\n\n` +
-            `Нажмите кнопку ниже чтобы снять таймаут.`
+            `Нажмите кнопку ниже чтобы снять таймаут или восстановить канал.`
           )
           .setTimestamp();
         
@@ -563,6 +576,7 @@ client.on('channelDelete', async (channel) => {
           } catch (e) {}
         }
         
+        // Лог в канал логов
         const cfg = getConfig();
         if (cfg.logChannelId) {
           const logChannel = await guild.channels.fetch(cfg.logChannelId).catch(() => null);
@@ -573,7 +587,7 @@ client.on('channelDelete', async (channel) => {
               .addFields(
                 { name: '👤 Нарушитель', value: executor.tag, inline: true },
                 { name: '🗑️ Канал', value: channelData.name, inline: true },
-                { name: '🔄 Восстановлен', value: restored ? '✅' : '❌', inline: true }
+                { name: '⏰ Наказание', value: '24 часа', inline: true }
               )
               .setTimestamp();
             
@@ -583,9 +597,9 @@ client.on('channelDelete', async (channel) => {
       } catch (error) {
         console.error(`❌ Ошибка выдачи таймаута:`, error);
       }
+    } else if (executor && (executor.id === guild.ownerId || executor.permissions.has(PermissionFlagsBits.Administrator))) {
+      console.log(`ℹ️ Канал удалён админом ${executor.tag} — таймаут не выдаётся`);
     }
-    
-    if (restored) console.log(`✅ Канал "${channelData.name}" восстановлен`);
     
   } catch (error) {
     console.error('❌ Ошибка в channelDelete:', error);
@@ -669,7 +683,7 @@ client.on('inviteDelete', async (invite) => {
 // ========== ЗАПУСК БОТА ==========
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} запущен!`);
-  console.log(`🛡️ АНТИ-СНОС АКТИВЕН (тикеты НЕ восстанавливаются)`);
+  console.log(`🛡️ АНТИ-СНОС: только таймаут, без авто-восстановления`);
   
   setInterval(() => {
     client.user.setActivity(`🛡️ ${getUptimeShort()}`, { type: 3 });
@@ -710,10 +724,11 @@ client.once('ready', async () => {
       },
       { name: 'unbanall', description: 'Разбанить всех забаненных участников (только для админа)' },
       { name: 'invites', description: 'Показать топ пригласивших' },
-      { name: 'save_channels', description: 'Сохранить структуру каналов в память (админ)' },
+      { name: 'save_channels', description: 'Сохранить структуру каналов (админ)' },
       { name: 'backup_info', description: 'Показать информацию о бэкапе (админ)' },
-      { name: 'restore_backup', description: 'Восстановить каналы из бэкапа (админ)' },
-      { name: 'sync_roles', description: 'Синхронизировать роли стаффа со статистикой (админ)' }
+      { name: 'restore_backup', description: 'Восстановить ВСЕ каналы из бэкапа (админ)' },
+      { name: 'sync_roles', description: 'Синхронизировать роли стаффа со статистикой (админ)' },
+      { name: 'deleted_list', description: 'Показать список недавно удалённых каналов (админ)' }
     ]);
     
     console.log('✅ Команды зарегистрированы!');
@@ -729,6 +744,70 @@ client.on('interactionCreate', async interaction => {
                    (cfg.staffRoleId_stack2 && interaction.member?.roles?.cache?.has(cfg.staffRoleId_stack2)) ||
                    interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
   const isAdmin = interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
+  
+  // ========== КНОПКА ВОССТАНОВЛЕНИЯ УДАЛЁННОГО КАНАЛА ==========
+  if (interaction.isButton() && interaction.customId.startsWith('restore_deleted_')) {
+    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
+    
+    const channelId = interaction.customId.replace('restore_deleted_', '');
+    const deletedCollection = savedChannels.get('deleted_channels');
+    
+    if (!deletedCollection) {
+      return interaction.reply({ content: '❌ Нет сохранённых удалённых каналов!', ephemeral: true });
+    }
+    
+    const channelData = deletedCollection.get(channelId);
+    
+    if (!channelData) {
+      return interaction.reply({ content: '❌ Данные канала не найдены!', ephemeral: true });
+    }
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const restored = await restoreChannel(interaction.guild, channelData);
+      
+      if (restored) {
+        deletedCollection.delete(channelId);
+        
+        const embed = new EmbedBuilder()
+          .setTitle('✅ КАНАЛ ВОССТАНОВЛЕН')
+          .setColor(0x00FF00)
+          .setDescription(`Канал **${channelData.name}** успешно восстановлен!`)
+          .setTimestamp();
+        
+        await interaction.editReply({ embeds: [embed] });
+      } else {
+        await interaction.editReply({ content: '❌ Не удалось восстановить канал!' });
+      }
+    } catch (error) {
+      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
+    }
+  }
+  
+  // ========== /deleted_list ==========
+  if (interaction.isCommand() && interaction.commandName === 'deleted_list') {
+    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
+    
+    const deletedCollection = savedChannels.get('deleted_channels');
+    
+    if (!deletedCollection || deletedCollection.size === 0) {
+      return interaction.reply({ content: '📭 Нет удалённых каналов в памяти', ephemeral: true });
+    }
+    
+    const channels = Array.from(deletedCollection.values());
+    const list = channels.slice(0, 20).map((ch, i) => 
+      `**${i + 1}.** ${ch.type === 'text' ? '💬' : ch.type === 'voice' ? '🔊' : '📁'} **${ch.name}** — ${new Date(ch.deletedAt).toLocaleTimeString('ru-RU')}`
+    ).join('\n');
+    
+    const embed = new EmbedBuilder()
+      .setTitle('🗑️ НЕДАВНО УДАЛЁННЫЕ КАНАЛЫ')
+      .setColor(0xFFA500)
+      .setDescription(list || 'Нет данных')
+      .setFooter({ text: `Всего: ${deletedCollection.size} каналов` });
+    
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+  }
   
   // ========== /sync_roles ==========
   if (interaction.isCommand() && interaction.commandName === 'sync_roles') {
@@ -811,12 +890,17 @@ client.on('interactionCreate', async interaction => {
     if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
     
     const backupData = savedChannels.get('full_backup');
-    if (!backupData) return interaction.reply({ content: '❌ Бэкап не создан!', ephemeral: true });
+    if (!backupData) return interaction.reply({ content: '❌ Бэкап не создан! Используйте /save_channels', ephemeral: true });
     
     const embed = new EmbedBuilder()
       .setTitle('📦 ИНФОРМАЦИЯ О БЭКАПЕ')
       .setColor(0x3498DB)
-      .setDescription(`**Сохранено:** ${new Date(backupData.savedAt).toLocaleString('ru-RU')}\n**Каналов:** ${backupData.totalChannels}`);
+      .setDescription(
+        `**Сервер:** ${backupData.guildName}\n` +
+        `**Сохранено:** ${new Date(backupData.savedAt).toLocaleString('ru-RU')}\n` +
+        `**Категорий:** ${backupData.categories.length}\n` +
+        `**Каналов:** ${backupData.totalChannels}`
+      );
     
     await interaction.reply({ embeds: [embed], ephemeral: true });
   }
@@ -826,7 +910,7 @@ client.on('interactionCreate', async interaction => {
     if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
     
     const backupData = savedChannels.get('full_backup');
-    if (!backupData) return interaction.reply({ content: '❌ Бэкап не создан!', ephemeral: true });
+    if (!backupData) return interaction.reply({ content: '❌ Бэкап не создан! Используйте /save_channels', ephemeral: true });
     
     await interaction.deferReply({ ephemeral: true });
     
@@ -835,9 +919,12 @@ client.on('interactionCreate', async interaction => {
       
       if (result.success) {
         const embed = new EmbedBuilder()
-          .setTitle('✅ КАНАЛЫ ВОССТАНОВЛЕНЫ')
+          .setTitle('✅ КАНАЛЫ ВОССТАНОВЛЕНЫ ИЗ БЭКАПА')
           .setColor(0x00FF00)
-          .setDescription(`**Категорий:** ${result.categories}\n**Каналов:** ${result.channels}`);
+          .setDescription(
+            `**Категорий создано:** ${result.categories}\n` +
+            `**Каналов создано:** ${result.channels}`
+          );
         
         await interaction.editReply({ embeds: [embed] });
       } else {
@@ -1142,7 +1229,6 @@ client.on('interactionCreate', async interaction => {
       await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0x00FF00)], components: [] });
       await interaction.channel.send(`<@${userId}> 🎉 Заявка принята!`);
       
-      // Удаляем канал через 30 минут
       setTimeout(async () => {
         try {
           const ch = await interaction.guild.channels.fetch(interaction.channel.id).catch(() => null);
@@ -1257,6 +1343,7 @@ client.login(token);
 http.createServer((req, res) => { 
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); 
   const backup = savedChannels.get('full_backup');
+  const deletedCollection = savedChannels.get('deleted_channels');
   res.end(`
     <!DOCTYPE html>
     <html>
@@ -1265,7 +1352,8 @@ http.createServer((req, res) => {
       <h1>✅ Winter Team Bot работает!</h1>
       <p>📊 Стаффа: ${staffStats.size}</p>
       <p>💾 Бэкап: ${backup ? `${backup.totalChannels} каналов` : 'не создан'}</p>
-      <p>🎫 Тикеты НЕ восстанавливаются</p>
+      <p>🗑️ Удалённых каналов в памяти: ${deletedCollection?.size || 0}</p>
+      <p>🛡️ Только таймаут, без авто-восстановления</p>
       <p>⏰ Аптайм: ${getUptime()}</p>
     </body>
     </html>
