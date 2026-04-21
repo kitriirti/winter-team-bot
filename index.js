@@ -283,7 +283,7 @@ function isTicketChannel(channel) {
   return false;
 }
 
-// ========== СОХРАНЕНИЕ СТРУКТУРЫ КАНАЛОВ (БЕЗ ТИКЕТОВ) ==========
+// ========== СОХРАНЕНИЕ СТРУКТУРЫ КАНАЛОВ ==========
 async function saveAllChannels(guild) {
   try {
     savedChannels.clear();
@@ -371,7 +371,7 @@ async function restoreChannel(guild, channelData) {
   }
 }
 
-// ========== ВОССТАНОВЛЕНИЕ ИЗ БЭКАПА (ТОЛЬКО ПО КОМАНДЕ) ==========
+// ========== ВОССТАНОВЛЕНИЕ ИЗ БЭКАПА ==========
 async function restoreFromBackup(guild) {
   try {
     const backupData = savedChannels.get('full_backup');
@@ -381,7 +381,6 @@ async function restoreFromBackup(guild) {
     let createdChannels = 0;
     const categoryMap = new Map();
     
-    // Создаём категории
     for (const cat of backupData.categories) {
       try {
         const existing = guild.channels.cache.get(cat.id);
@@ -391,16 +390,12 @@ async function restoreFromBackup(guild) {
           });
           categoryMap.set(cat.id, newCategory.id);
           createdCategories++;
-          console.log(`📁 Восстановлена категория: ${cat.name}`);
         } else {
           categoryMap.set(cat.id, cat.id);
         }
-      } catch (e) {
-        console.error(`❌ Ошибка категории ${cat.name}:`, e);
-      }
+      } catch (e) {}
     }
     
-    // Создаём каналы в категориях
     for (const cat of backupData.categories) {
       for (const ch of cat.channels) {
         try {
@@ -420,15 +415,11 @@ async function restoreFromBackup(guild) {
               });
             }
             createdChannels++;
-            console.log(`📋 Восстановлен канал: ${ch.name}`);
           }
-        } catch (e) {
-          console.error(`❌ Ошибка канала ${ch.name}:`, e);
-        }
+        } catch (e) {}
       }
     }
     
-    // Создаём каналы вне категорий
     for (const ch of backupData.standaloneChannels) {
       try {
         const existing = guild.channels.cache.get(ch.id);
@@ -445,11 +436,8 @@ async function restoreFromBackup(guild) {
             });
           }
           createdChannels++;
-          console.log(`📋 Восстановлен канал: ${ch.name}`);
         }
-      } catch (e) {
-        console.error(`❌ Ошибка канала ${ch.name}:`, e);
-      }
+      } catch (e) {}
     }
     
     return { success: true, categories: createdCategories, channels: createdChannels };
@@ -465,11 +453,9 @@ client.on('channelDelete', async (channel) => {
     
     const guild = channel.guild;
     
-    // Тикет-каналы игнорируем полностью
     if (isTicketChannel(channel)) {
       console.log(`🎫 Тикет-канал "${channel.name}" удалён — игнорируем`);
       
-      // Очищаем тикет из активных
       for (const [ticketId, ticket] of activeTickets) {
         if (ticket.channelId === channel.id) {
           clearTimeout(autoDeleteTimeouts.get(ticketId));
@@ -483,7 +469,6 @@ client.on('channelDelete', async (channel) => {
     
     await new Promise(resolve => setTimeout(resolve, 1500));
     
-    // Получаем аудит-лог
     const auditLogs = await guild.fetchAuditLogs({ type: 12, limit: 10 });
     const deleteLog = auditLogs.entries.find(entry => 
       entry.target.id === channel.id && 
@@ -495,7 +480,6 @@ client.on('channelDelete', async (channel) => {
     console.log(`🗑️ Канал "${channel.name}" удалён!`);
     if (executor) console.log(`👤 Удалил: ${executor.tag}`);
     
-    // Сохраняем данные канала (на случай если админ захочет восстановить вручную)
     const channelData = {
       name: channel.name,
       type: channel.type === ChannelType.GuildText ? 'text' : 
@@ -511,20 +495,17 @@ client.on('channelDelete', async (channel) => {
       deletedAt: new Date()
     };
     
-    // Сохраняем в отдельную коллекцию удалённых каналов
     if (!savedChannels.has('deleted_channels')) {
       savedChannels.set('deleted_channels', new Collection());
     }
     const deletedCollection = savedChannels.get('deleted_channels');
     deletedCollection.set(channel.id, channelData);
     
-    // Ограничиваем размер коллекции (храним последние 50 каналов)
     if (deletedCollection.size > 50) {
       const firstKey = deletedCollection.keys().next().value;
       deletedCollection.delete(firstKey);
     }
     
-    // Если есть нарушитель и это НЕ админ/владелец — выдаём таймаут
     if (executor && 
         executor.id !== guild.ownerId && 
         !executor.permissions.has(PermissionFlagsBits.Administrator) &&
@@ -542,7 +523,6 @@ client.on('channelDelete', async (channel) => {
           deletedChannel: channelData
         });
         
-        // Уведомление админам с кнопками
         const admins = guild.members.cache.filter(m => 
           m.permissions.has(PermissionFlagsBits.Administrator) && !m.user.bot
         );
@@ -576,7 +556,6 @@ client.on('channelDelete', async (channel) => {
           } catch (e) {}
         }
         
-        // Лог в канал логов
         const cfg = getConfig();
         if (cfg.logChannelId) {
           const logChannel = await guild.channels.fetch(cfg.logChannelId).catch(() => null);
@@ -597,8 +576,6 @@ client.on('channelDelete', async (channel) => {
       } catch (error) {
         console.error(`❌ Ошибка выдачи таймаута:`, error);
       }
-    } else if (executor && (executor.id === guild.ownerId || executor.permissions.has(PermissionFlagsBits.Administrator))) {
-      console.log(`ℹ️ Канал удалён админом ${executor.tag} — таймаут не выдаётся`);
     }
     
   } catch (error) {
@@ -606,63 +583,28 @@ client.on('channelDelete', async (channel) => {
   }
 });
 
-// ========== ПРИВЕТСТВИЕ ==========
+// ========== ПРИВЕТСТВИЕ НОВЫХ УЧАСТНИКОВ (ТОЛЬКО ВЫДАЧА РОЛИ, БЕЗ УВЕДОМЛЕНИЙ) ==========
 client.on('guildMemberAdd', async (member) => {
   try {
     const cfg = getConfig();
     
+    // Только выдаём роль, без сообщений
     if (cfg.autoRoleId) {
       await member.roles.add(cfg.autoRoleId).catch(() => {});
+      console.log(`✅ Роль выдана участнику ${member.user.tag}`);
     }
     
-    let inviter = null;
-    let totalInvites = 0;
-    
+    // Обновляем кэш приглашений (для статистики)
     try {
       const newInvites = await member.guild.invites.fetch();
-      const oldInvites = invites.get(member.guild.id);
-      
-      if (oldInvites) {
-        let maxIncrease = 0;
-        for (const [code, invite] of newInvites) {
-          const oldInvite = oldInvites.get(code);
-          if (oldInvite) {
-            const increase = invite.uses - oldInvite.uses;
-            if (increase > maxIncrease) {
-              maxIncrease = increase;
-              inviter = invite.inviter;
-            }
-          }
-        }
-      }
-      
       invites.set(member.guild.id, newInvites);
-      
-      if (inviter) {
-        totalInvites = newInvites
-          .filter(inv => inv.inviter?.id === inviter.id)
-          .reduce((total, inv) => total + (inv.uses || 0), 0);
-      }
     } catch (error) {}
     
-    if (cfg.welcomeChannelId) {
-      const welcomeChannel = await member.guild.channels.fetch(cfg.welcomeChannelId).catch(() => null);
-      if (welcomeChannel) {
-        const embed = new EmbedBuilder()
-          .setColor(0x00FF00)
-          .setTitle('👋 НОВЫЙ УЧАСТНИК!')
-          .setDescription(
-            `**${member.user}** присоединился к серверу!\n\n` +
-            `🆔 **ID:** \`${member.user.id}\`\n` +
-            (inviter ? `📨 **Пригласил:** ${inviter} (всего: **${totalInvites}**)` : ``)
-          )
-          .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
-          .setTimestamp();
-        
-        await welcomeChannel.send({ embeds: [embed] });
-      }
-    }
-  } catch (error) {}
+    // НИКАКИХ УВЕДОМЛЕНИЙ В КАНАЛ!
+    
+  } catch (error) {
+    console.error('❌ Ошибка в guildMemberAdd:', error);
+  }
 });
 
 // ========== ОТСЛЕЖИВАНИЕ ПРИГЛАШЕНИЙ ==========
@@ -684,6 +626,7 @@ client.on('inviteDelete', async (invite) => {
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} запущен!`);
   console.log(`🛡️ АНТИ-СНОС: только таймаут, без авто-восстановления`);
+  console.log(`👋 Приветствия ОТКЛЮЧЕНЫ`);
   
   setInterval(() => {
     client.user.setActivity(`🛡️ ${getUptimeShort()}`, { type: 3 });
@@ -1352,8 +1295,8 @@ http.createServer((req, res) => {
       <h1>✅ Winter Team Bot работает!</h1>
       <p>📊 Стаффа: ${staffStats.size}</p>
       <p>💾 Бэкап: ${backup ? `${backup.totalChannels} каналов` : 'не создан'}</p>
-      <p>🗑️ Удалённых каналов в памяти: ${deletedCollection?.size || 0}</p>
-      <p>🛡️ Только таймаут, без авто-восстановления</p>
+      <p>🗑️ Удалённых каналов: ${deletedCollection?.size || 0}</p>
+      <p>👋 Приветствия ОТКЛЮЧЕНЫ</p>
       <p>⏰ Аптайм: ${getUptime()}</p>
     </body>
     </html>
