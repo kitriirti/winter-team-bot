@@ -1,7 +1,5 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ChannelType, Collection } = require('discord.js');
 const http = require('http');
-const fs = require('fs');
-const path = require('path');
 
 // ========== НАСТРОЙКИ КЛИЕНТА ==========
 const client = new Client({
@@ -31,66 +29,6 @@ let stats = {
   stack2: { accepted: 0, denied: 0, autoDenied: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() }
 };
 
-// ========== ЗАГРУЗКА СТАТИСТИКИ ИЗ ФАЙЛА ==========
-const statsPath = path.join(__dirname, 'stats.json');
-
-function loadStats() {
-  try {
-    if (fs.existsSync(statsPath)) {
-      const data = JSON.parse(fs.readFileSync(statsPath, 'utf8'));
-      
-      if (data.staffStats) {
-        staffStats = new Collection(Object.entries(data.staffStats));
-        console.log(`✅ Загружена статистика стаффа: ${staffStats.size} записей`);
-      }
-      
-      if (data.globalStats) {
-        stats = data.globalStats;
-        console.log(`✅ Загружена глобальная статистика`);
-      }
-      
-      if (data.ticketStatus) {
-        ticketStatus = data.ticketStatus;
-        console.log(`✅ Загружен статус набора`);
-      }
-    } else {
-      console.log('ℹ️ Файл статистики не найден, начинаем с нуля');
-    }
-  } catch (error) {
-    console.error('❌ Ошибка загрузки статистики:', error);
-  }
-}
-
-function saveStats() {
-  try {
-    const data = {
-      staffStats: Object.fromEntries(staffStats),
-      globalStats: stats,
-      ticketStatus: ticketStatus,
-      lastSaved: new Date().toISOString()
-    };
-    
-    fs.writeFileSync(statsPath, JSON.stringify(data, null, 2));
-    console.log('💾 Статистика сохранена в файл');
-  } catch (error) {
-    console.error('❌ Ошибка сохранения статистики:', error);
-  }
-}
-
-loadStats();
-
-const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-if (stats.stack1.weekStart < weekAgo) {
-  stats.stack1.weekAccepted = 0;
-  stats.stack1.weekDenied = 0;
-  stats.stack1.weekStart = Date.now();
-}
-if (stats.stack2.weekStart < weekAgo) {
-  stats.stack2.weekAccepted = 0;
-  stats.stack2.weekDenied = 0;
-  stats.stack2.weekStart = Date.now();
-}
-
 const startTime = Date.now();
 
 // ========== ПОЛУЧЕНИЕ КОНФИГУРАЦИИ ==========
@@ -103,7 +41,6 @@ const getConfig = () => {
     staffRoleId_stack2: process.env.STAFF_ROLE_STACK2,
     logChannelId: process.env.LOG_CHANNEL_ID,
     memberRoleId: process.env.MEMBER_ROLE_ID,
-    welcomeChannelId: process.env.WELCOME_CHANNEL_ID,
     autoRoleId: process.env.AUTO_ROLE_ID
   };
 };
@@ -186,37 +123,6 @@ async function updateStaffRole(guild, staffId, acceptedCount) {
   }
 }
 
-// ========== СИНХРОНИЗАЦИЯ РОЛЕЙ СТАФФА ==========
-async function syncAllStaffRoles(guild) {
-  try {
-    console.log('🔄 Синхронизация ролей стаффа...');
-    
-    for (const [staffId, data] of staffStats) {
-      await updateStaffRole(guild, staffId, data.accepted);
-    }
-    
-    const cfg = getConfig();
-    const staffRoles = [cfg.staffRoleId_stack1, cfg.staffRoleId_stack2].filter(Boolean);
-    
-    for (const roleId of staffRoles) {
-      const role = await guild.roles.fetch(roleId).catch(() => null);
-      if (!role) continue;
-      
-      for (const member of role.members.values()) {
-        if (!staffStats.has(member.id)) {
-          staffStats.set(member.id, { accepted: 0, tag: member.user.tag });
-          console.log(`➕ Добавлен в статистику: ${member.user.tag}`);
-        }
-      }
-    }
-    
-    saveStats();
-    console.log('✅ Синхронизация ролей завершена');
-  } catch (error) {
-    console.error('❌ Ошибка синхронизации:', error);
-  }
-}
-
 // ========== СИСТЕМА ТИКЕТОВ ==========
 function scheduleInactiveDelete(channelId, ticketId) {
   const timeout = setTimeout(async () => {
@@ -229,10 +135,7 @@ function scheduleInactiveDelete(channelId, ticketId) {
         if (messages.size <= 1 || (messages.size === 2 && botMessages.size >= 1)) {
           await channel.send('🗑️ **Тикет автоматически закрыт (неактивность 48 часов).**');
           setTimeout(async () => {
-            try { 
-              await channel.delete(); 
-              console.log(`🎫 Тикет ${channel.name} удалён по неактивности`);
-            } catch (error) {}
+            try { await channel.delete(); } catch (error) {}
           }, 5000);
         }
       }
@@ -268,25 +171,16 @@ async function createTicketMessage(channel, stackType) {
   return await channel.send({ embeds: [embed], components: [row] });
 }
 
-// ========== ПРОВЕРКА: ЭТО ТИКЕТ-КАНАЛ? ==========
 function isTicketChannel(channel) {
   const cfg = getConfig();
-  
-  if (channel.name.startsWith('🔥｜') || channel.name.startsWith('💧｜')) {
-    return true;
-  }
-  
-  if (cfg.ticketCategory && channel.parentId === cfg.ticketCategory) {
-    return true;
-  }
-  
+  if (channel.name.startsWith('🔥｜') || channel.name.startsWith('💧｜')) return true;
+  if (cfg.ticketCategory && channel.parentId === cfg.ticketCategory) return true;
   return false;
 }
 
 // ========== СОХРАНЕНИЕ СТРУКТУРЫ КАНАЛОВ ==========
 async function saveAllChannels(guild) {
   try {
-    savedChannels.clear();
     const categories = [];
     const standaloneChannels = [];
     
@@ -295,8 +189,10 @@ async function saveAllChannels(guild) {
       
       if (channel.type === ChannelType.GuildCategory) {
         categories.push({
-          id: channel.id, name: channel.name, type: 'category',
-          position: channel.position, channels: []
+          name: channel.name,
+          type: 'category',
+          position: channel.position,
+          channels: []
         });
       }
     }
@@ -306,16 +202,19 @@ async function saveAllChannels(guild) {
       
       if (channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildVoice) {
         const channelData = {
-          id: channel.id, name: channel.name,
+          name: channel.name,
           type: channel.type === ChannelType.GuildText ? 'text' : 'voice',
-          parentId: channel.parentId, parentName: channel.parent?.name || null,
-          position: channel.position, topic: channel.topic || null,
-          nsfw: channel.nsfw || false, rateLimitPerUser: channel.rateLimitPerUser || 0,
-          bitrate: channel.bitrate || null, userLimit: channel.userLimit || null
+          parentName: channel.parent?.name || null,
+          position: channel.position,
+          topic: channel.topic || null,
+          nsfw: channel.nsfw || false,
+          rateLimitPerUser: channel.rateLimitPerUser || 0,
+          bitrate: channel.bitrate || null,
+          userLimit: channel.userLimit || null
         };
         
         if (channel.parent) {
-          const category = categories.find(c => c.id === channel.parentId);
+          const category = categories.find(c => c.name === channel.parent.name);
           if (category) category.channels.push(channelData);
         } else {
           standaloneChannels.push(channelData);
@@ -324,16 +223,161 @@ async function saveAllChannels(guild) {
     }
     
     const backupData = {
-      guildId: guild.id, guildName: guild.name, savedAt: new Date(),
-      categories, standaloneChannels, totalChannels: guild.channels.cache.size
+      guildName: guild.name,
+      exportedAt: new Date().toISOString(),
+      categories: categories,
+      standaloneChannels: standaloneChannels,
+      totalChannels: categories.reduce((acc, cat) => acc + cat.channels.length, 0) + standaloneChannels.length
     };
     
     savedChannels.set('full_backup', backupData);
-    console.log(`💾 Сохранено: ${categories.length} категорий, ${standaloneChannels.length} каналов`);
+    console.log(`💾 Сохранено: ${categories.length} категорий, ${backupData.totalChannels} каналов`);
     return backupData;
   } catch (error) {
     console.error('❌ Ошибка сохранения:', error);
     return null;
+  }
+}
+
+// ========== ЭКСПОРТ БЭКАПА (ОТПРАВЛЯЕТ JSON В ЧАТ) ==========
+async function exportBackup(interaction) {
+  try {
+    const backupData = await saveAllChannels(interaction.guild);
+    
+    if (!backupData) {
+      return { success: false, error: 'Не удалось создать бэкап' };
+    }
+    
+    // Конвертируем в JSON строку
+    const jsonString = JSON.stringify(backupData, null, 2);
+    
+    // Разбиваем на части если слишком большой (Discord лимит 2000 символов)
+    const chunks = [];
+    for (let i = 0; i < jsonString.length; i += 1900) {
+      chunks.push(jsonString.slice(i, i + 1900));
+    }
+    
+    return { success: true, chunks, backupData };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// ========== ИМПОРТ БЭКАПА (СОЗДАЁТ КАНАЛЫ ИЗ JSON) ==========
+async function importBackup(guild, jsonString) {
+  try {
+    const backupData = JSON.parse(jsonString);
+    
+    let createdCategories = 0;
+    let createdChannels = 0;
+    const categoryMap = new Map();
+    
+    // Создаём категории
+    for (const cat of backupData.categories) {
+      try {
+        // Проверяем, нет ли уже категории с таким именем
+        const existing = guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && c.name === cat.name);
+        if (!existing) {
+          const newCategory = await guild.channels.create({
+            name: cat.name,
+            type: ChannelType.GuildCategory,
+            position: cat.position
+          });
+          categoryMap.set(cat.name, newCategory.id);
+          createdCategories++;
+          console.log(`📁 Создана категория: ${cat.name}`);
+          await new Promise(resolve => setTimeout(resolve, 500)); // Задержка чтобы не спамить API
+        } else {
+          categoryMap.set(cat.name, existing.id);
+          console.log(`📁 Категория уже существует: ${cat.name}`);
+        }
+      } catch (e) {
+        console.error(`❌ Ошибка категории ${cat.name}:`, e.message);
+      }
+    }
+    
+    // Создаём каналы в категориях
+    for (const cat of backupData.categories) {
+      for (const ch of cat.channels) {
+        try {
+          const parentId = categoryMap.get(ch.parentName);
+          
+          // Проверяем, нет ли уже канала с таким именем в этой категории
+          const existing = guild.channels.cache.find(c => c.name === ch.name && c.parentId === parentId);
+          if (!existing) {
+            if (ch.type === 'text') {
+              await guild.channels.create({
+                name: ch.name,
+                type: ChannelType.GuildText,
+                parent: parentId,
+                position: ch.position,
+                topic: ch.topic || undefined,
+                nsfw: ch.nsfw || false,
+                rateLimitPerUser: ch.rateLimitPerUser || 0
+              });
+            } else if (ch.type === 'voice') {
+              await guild.channels.create({
+                name: ch.name,
+                type: ChannelType.GuildVoice,
+                parent: parentId,
+                position: ch.position,
+                bitrate: ch.bitrate || 64000,
+                userLimit: ch.userLimit || 0
+              });
+            }
+            createdChannels++;
+            console.log(`📋 Создан канал: ${ch.name}`);
+            await new Promise(resolve => setTimeout(resolve, 500));
+          } else {
+            console.log(`📋 Канал уже существует: ${ch.name}`);
+          }
+        } catch (e) {
+          console.error(`❌ Ошибка канала ${ch.name}:`, e.message);
+        }
+      }
+    }
+    
+    // Создаём каналы вне категорий
+    for (const ch of backupData.standaloneChannels) {
+      try {
+        const existing = guild.channels.cache.find(c => c.name === ch.name && !c.parentId);
+        if (!existing) {
+          if (ch.type === 'text') {
+            await guild.channels.create({
+              name: ch.name,
+              type: ChannelType.GuildText,
+              position: ch.position,
+              topic: ch.topic || undefined,
+              nsfw: ch.nsfw || false,
+              rateLimitPerUser: ch.rateLimitPerUser || 0
+            });
+          } else if (ch.type === 'voice') {
+            await guild.channels.create({
+              name: ch.name,
+              type: ChannelType.GuildVoice,
+              position: ch.position,
+              bitrate: ch.bitrate || 64000,
+              userLimit: ch.userLimit || 0
+            });
+          }
+          createdChannels++;
+          console.log(`📋 Создан канал: ${ch.name}`);
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      } catch (e) {
+        console.error(`❌ Ошибка канала ${ch.name}:`, e.message);
+      }
+    }
+    
+    return { 
+      success: true, 
+      categories: createdCategories, 
+      channels: createdChannels,
+      totalCategories: backupData.categories.length,
+      totalChannels: backupData.totalChannels
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
   }
 }
 
@@ -344,8 +388,6 @@ async function restoreChannel(guild, channelData) {
     if (channelData.parentName) {
       const parent = guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && c.name === channelData.parentName);
       if (parent) parentId = parent.id;
-    } else if (channelData.parentId) {
-      parentId = channelData.parentId;
     }
     
     if (channelData.type === 'text') {
@@ -371,82 +413,7 @@ async function restoreChannel(guild, channelData) {
   }
 }
 
-// ========== ВОССТАНОВЛЕНИЕ ИЗ БЭКАПА ==========
-async function restoreFromBackup(guild) {
-  try {
-    const backupData = savedChannels.get('full_backup');
-    if (!backupData) return { success: false, error: 'Нет сохранённых данных! Используйте /save_channels' };
-    
-    let createdCategories = 0;
-    let createdChannels = 0;
-    const categoryMap = new Map();
-    
-    for (const cat of backupData.categories) {
-      try {
-        const existing = guild.channels.cache.get(cat.id);
-        if (!existing) {
-          const newCategory = await guild.channels.create({
-            name: cat.name, type: ChannelType.GuildCategory, position: cat.position
-          });
-          categoryMap.set(cat.id, newCategory.id);
-          createdCategories++;
-        } else {
-          categoryMap.set(cat.id, cat.id);
-        }
-      } catch (e) {}
-    }
-    
-    for (const cat of backupData.categories) {
-      for (const ch of cat.channels) {
-        try {
-          const existing = guild.channels.cache.get(ch.id);
-          if (!existing) {
-            const parentId = categoryMap.get(ch.parentId) || ch.parentId;
-            if (ch.type === 'text') {
-              await guild.channels.create({
-                name: ch.name, type: ChannelType.GuildText, parent: parentId,
-                position: ch.position, topic: ch.topic || undefined,
-                nsfw: ch.nsfw, rateLimitPerUser: ch.rateLimitPerUser
-              });
-            } else if (ch.type === 'voice') {
-              await guild.channels.create({
-                name: ch.name, type: ChannelType.GuildVoice, parent: parentId,
-                position: ch.position, bitrate: ch.bitrate || 64000, userLimit: ch.userLimit || 0
-              });
-            }
-            createdChannels++;
-          }
-        } catch (e) {}
-      }
-    }
-    
-    for (const ch of backupData.standaloneChannels) {
-      try {
-        const existing = guild.channels.cache.get(ch.id);
-        if (!existing) {
-          if (ch.type === 'text') {
-            await guild.channels.create({
-              name: ch.name, type: ChannelType.GuildText, position: ch.position,
-              topic: ch.topic || undefined, nsfw: ch.nsfw, rateLimitPerUser: ch.rateLimitPerUser
-            });
-          } else if (ch.type === 'voice') {
-            await guild.channels.create({
-              name: ch.name, type: ChannelType.GuildVoice, position: ch.position,
-              bitrate: ch.bitrate || 64000, userLimit: ch.userLimit || 0
-            });
-          }
-          createdChannels++;
-        }
-      } catch (e) {}
-    }
-    
-    return { success: true, categories: createdCategories, channels: createdChannels };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-}
-
-// ========== АНТИ-СНОС: ТОЛЬКО ТАЙМАУТ, БЕЗ АВТО-ВОССТАНОВЛЕНИЯ ==========
+// ========== АНТИ-СНОС ==========
 client.on('channelDelete', async (channel) => {
   try {
     if (channel.type === ChannelType.DM || !channel.guild) return;
@@ -484,7 +451,6 @@ client.on('channelDelete', async (channel) => {
       name: channel.name,
       type: channel.type === ChannelType.GuildText ? 'text' : 
             (channel.type === ChannelType.GuildVoice ? 'voice' : 'category'),
-      parentId: channel.parentId,
       parentName: channel.parent?.name || null,
       position: channel.position,
       topic: channel.topic || null,
@@ -583,24 +549,19 @@ client.on('channelDelete', async (channel) => {
   }
 });
 
-// ========== ПРИВЕТСТВИЕ НОВЫХ УЧАСТНИКОВ (ТОЛЬКО ВЫДАЧА РОЛИ, БЕЗ УВЕДОМЛЕНИЙ) ==========
+// ========== ПРИВЕТСТВИЕ (ТОЛЬКО ВЫДАЧА РОЛИ) ==========
 client.on('guildMemberAdd', async (member) => {
   try {
     const cfg = getConfig();
-    
-    // Только выдаём роль, без сообщений
     if (cfg.autoRoleId) {
       await member.roles.add(cfg.autoRoleId).catch(() => {});
       console.log(`✅ Роль выдана участнику ${member.user.tag}`);
     }
     
-    // Обновляем кэш приглашений (для статистики)
     try {
       const newInvites = await member.guild.invites.fetch();
       invites.set(member.guild.id, newInvites);
     } catch (error) {}
-    
-    // НИКАКИХ УВЕДОМЛЕНИЙ В КАНАЛ!
     
   } catch (error) {
     console.error('❌ Ошибка в guildMemberAdd:', error);
@@ -625,8 +586,6 @@ client.on('inviteDelete', async (invite) => {
 // ========== ЗАПУСК БОТА ==========
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} запущен!`);
-  console.log(`🛡️ АНТИ-СНОС: только таймаут, без авто-восстановления`);
-  console.log(`👋 Приветствия ОТКЛЮЧЕНЫ`);
   
   setInterval(() => {
     client.user.setActivity(`🛡️ ${getUptimeShort()}`, { type: 3 });
@@ -645,7 +604,6 @@ client.once('ready', async () => {
     } catch (error) {}
     
     await saveAllChannels(guild);
-    await syncAllStaffRoles(guild);
     
     console.log(`📊 Сервер: ${guild.name} | Участников: ${guild.memberCount}`);
   }
@@ -667,10 +625,13 @@ client.once('ready', async () => {
       },
       { name: 'unbanall', description: 'Разбанить всех забаненных участников (только для админа)' },
       { name: 'invites', description: 'Показать топ пригласивших' },
-      { name: 'save_channels', description: 'Сохранить структуру каналов (админ)' },
-      { name: 'backup_info', description: 'Показать информацию о бэкапе (админ)' },
-      { name: 'restore_backup', description: 'Восстановить ВСЕ каналы из бэкапа (админ)' },
-      { name: 'sync_roles', description: 'Синхронизировать роли стаффа со статистикой (админ)' },
+      { name: 'save_channels', description: 'Сохранить структуру каналов в память (админ)' },
+      { name: 'export_backup', description: '📤 Экспортировать структуру каналов в JSON (скопируйте код)' },
+      { name: 'import_backup', description: '📥 Импортировать каналы из JSON кода',
+        options: [
+          { name: 'json', description: 'JSON код из команды /export_backup', type: 3, required: true }
+        ]
+      },
       { name: 'deleted_list', description: 'Показать список недавно удалённых каналов (админ)' }
     ]);
     
@@ -687,6 +648,84 @@ client.on('interactionCreate', async interaction => {
                    (cfg.staffRoleId_stack2 && interaction.member?.roles?.cache?.has(cfg.staffRoleId_stack2)) ||
                    interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
   const isAdmin = interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
+  
+  // ========== /export_backup ==========
+  if (interaction.isCommand() && interaction.commandName === 'export_backup') {
+    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const result = await exportBackup(interaction);
+      
+      if (result.success) {
+        // Отправляем JSON по частям
+        for (let i = 0; i < result.chunks.length; i++) {
+          const chunk = result.chunks[i];
+          const part = i + 1;
+          const total = result.chunks.length;
+          
+          await interaction.followUp({
+            content: `📤 **Часть ${part}/${total}**\n\`\`\`json\n${chunk}\n\`\`\``,
+            ephemeral: true
+          });
+        }
+        
+        const embed = new EmbedBuilder()
+          .setTitle('✅ ЭКСПОРТ ВЫПОЛНЕН')
+          .setColor(0x00FF00)
+          .setDescription(
+            `**Сервер:** ${result.backupData.guildName}\n` +
+            `**Категорий:** ${result.backupData.categories.length}\n` +
+            `**Каналов:** ${result.backupData.totalChannels}\n\n` +
+            `**📋 ИНСТРУКЦИЯ ПО ПЕРЕНОСУ:**\n` +
+            `1. Скопируйте ВЕСЬ JSON код из сообщений выше\n` +
+            `2. Объедините все части в один текст\n` +
+            `3. На другом сервере используйте:\n` +
+            `   \`/import_backup json: <вставьте JSON>\`\n\n` +
+            `⚠️ Важно: JSON должен быть без разрывов!`
+          )
+          .setTimestamp();
+        
+        await interaction.followUp({ embeds: [embed], ephemeral: true });
+      } else {
+        await interaction.editReply({ content: `❌ ${result.error}` });
+      }
+    } catch (error) {
+      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
+    }
+  }
+  
+  // ========== /import_backup ==========
+  if (interaction.isCommand() && interaction.commandName === 'import_backup') {
+    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
+    
+    const jsonInput = interaction.options.getString('json');
+    
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const result = await importBackup(interaction.guild, jsonInput);
+      
+      if (result.success) {
+        const embed = new EmbedBuilder()
+          .setTitle('✅ ИМПОРТ ВЫПОЛНЕН')
+          .setColor(0x00FF00)
+          .setDescription(
+            `**Категорий создано:** ${result.categories} / ${result.totalCategories}\n` +
+            `**Каналов создано:** ${result.channels} / ${result.totalChannels}\n\n` +
+            `⚠️ Существующие каналы пропущены.`
+          )
+          .setTimestamp();
+        
+        await interaction.editReply({ embeds: [embed] });
+      } else {
+        await interaction.editReply({ content: `❌ Ошибка импорта: ${result.error}` });
+      }
+    } catch (error) {
+      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
+    }
+  }
   
   // ========== КНОПКА ВОССТАНОВЛЕНИЯ УДАЛЁННОГО КАНАЛА ==========
   if (interaction.isButton() && interaction.customId.startsWith('restore_deleted_')) {
@@ -752,20 +791,6 @@ client.on('interactionCreate', async interaction => {
     await interaction.reply({ embeds: [embed], ephemeral: true });
   }
   
-  // ========== /sync_roles ==========
-  if (interaction.isCommand() && interaction.commandName === 'sync_roles') {
-    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
-    
-    await interaction.deferReply({ ephemeral: true });
-    
-    try {
-      await syncAllStaffRoles(interaction.guild);
-      await interaction.editReply({ content: '✅ Роли стаффа синхронизированы со статистикой!' });
-    } catch (error) {
-      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
-    }
-  }
-  
   // ========== КНОПКА СНЯТИЯ ТАЙМАУТА ==========
   if (interaction.isButton() && interaction.customId.startsWith('remove_timeout_')) {
     if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
@@ -825,56 +850,6 @@ client.on('interactionCreate', async interaction => {
         .setDescription(`**Категорий:** ${backupData.categories.length}\n**Каналов:** ${backupData.totalChannels}`);
       
       await interaction.editReply({ embeds: [embed] });
-    }
-  }
-  
-  // ========== /backup_info ==========
-  if (interaction.isCommand() && interaction.commandName === 'backup_info') {
-    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
-    
-    const backupData = savedChannels.get('full_backup');
-    if (!backupData) return interaction.reply({ content: '❌ Бэкап не создан! Используйте /save_channels', ephemeral: true });
-    
-    const embed = new EmbedBuilder()
-      .setTitle('📦 ИНФОРМАЦИЯ О БЭКАПЕ')
-      .setColor(0x3498DB)
-      .setDescription(
-        `**Сервер:** ${backupData.guildName}\n` +
-        `**Сохранено:** ${new Date(backupData.savedAt).toLocaleString('ru-RU')}\n` +
-        `**Категорий:** ${backupData.categories.length}\n` +
-        `**Каналов:** ${backupData.totalChannels}`
-      );
-    
-    await interaction.reply({ embeds: [embed], ephemeral: true });
-  }
-  
-  // ========== /restore_backup ==========
-  if (interaction.isCommand() && interaction.commandName === 'restore_backup') {
-    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
-    
-    const backupData = savedChannels.get('full_backup');
-    if (!backupData) return interaction.reply({ content: '❌ Бэкап не создан! Используйте /save_channels', ephemeral: true });
-    
-    await interaction.deferReply({ ephemeral: true });
-    
-    try {
-      const result = await restoreFromBackup(interaction.guild);
-      
-      if (result.success) {
-        const embed = new EmbedBuilder()
-          .setTitle('✅ КАНАЛЫ ВОССТАНОВЛЕНЫ ИЗ БЭКАПА')
-          .setColor(0x00FF00)
-          .setDescription(
-            `**Категорий создано:** ${result.categories}\n` +
-            `**Каналов создано:** ${result.channels}`
-          );
-        
-        await interaction.editReply({ embeds: [embed] });
-      } else {
-        await interaction.editReply({ content: `❌ ${result.error}` });
-      }
-    } catch (error) {
-      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
     }
   }
   
@@ -1012,7 +987,6 @@ client.on('interactionCreate', async interaction => {
     
     const stack = interaction.customId === 'toggle_stack1' ? 'stack1' : 'stack2';
     ticketStatus[stack] = !ticketStatus[stack];
-    saveStats();
     
     const embed = EmbedBuilder.from(interaction.message.embeds[0]).setDescription(
       interaction.message.embeds[0].description.replace(/Статус набора:.*/, `**Статус набора:** ${ticketStatus[stack] ? '🟢 Открыт' : '🔴 Закрыт'}`)
@@ -1061,7 +1035,6 @@ client.on('interactionCreate', async interaction => {
     if (hours < minHours) {
       if (stack === 'stack1') { stats.stack1.denied++; stats.stack1.weekDenied++; stats.stack1.autoDenied = (stats.stack1.autoDenied||0)+1; }
       else { stats.stack2.denied++; stats.stack2.weekDenied++; stats.stack2.autoDenied = (stats.stack2.autoDenied||0)+1; }
-      saveStats();
       
       return interaction.reply({ embeds: [new EmbedBuilder().setTitle('❌ Отклонено').setDescription(`Часов: ${hours}, нужно: ${minHours}+`).setColor(0xFF0000)], ephemeral: true });
     }
@@ -1161,8 +1134,6 @@ client.on('interactionCreate', async interaction => {
       if (!staffStats.has(staffId)) staffStats.set(staffId, { accepted: 0, tag: interaction.user.tag });
       staffStats.get(staffId).accepted++;
       
-      saveStats();
-      
       await updateStaffRole(interaction.guild, staffId, staffStats.get(staffId).accepted);
       
       if (cfg.memberRoleId) {
@@ -1175,10 +1146,7 @@ client.on('interactionCreate', async interaction => {
       setTimeout(async () => {
         try {
           const ch = await interaction.guild.channels.fetch(interaction.channel.id).catch(() => null);
-          if (ch) {
-            await ch.delete();
-            console.log(`🎫 Тикет ${ch.name} удалён через 30 минут`);
-          }
+          if (ch) await ch.delete();
         } catch (error) {}
       }, 30 * 60 * 1000);
       
@@ -1239,7 +1207,6 @@ client.on('interactionCreate', async interaction => {
       
       if (stack === 'stack1') { stats.stack1.denied++; stats.stack1.weekDenied++; } 
       else { stats.stack2.denied++; stats.stack2.weekDenied++; }
-      saveStats();
       
       const ticketId = `${userId}_${stack}`;
       clearTimeout(autoDeleteTimeouts.get(ticketId));
@@ -1285,18 +1252,14 @@ client.login(token);
 // ========== HTTP СЕРВЕР ДЛЯ RENDER ==========
 http.createServer((req, res) => { 
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); 
-  const backup = savedChannels.get('full_backup');
-  const deletedCollection = savedChannels.get('deleted_channels');
   res.end(`
     <!DOCTYPE html>
     <html>
     <head><title>Winter Team Bot</title></head>
     <body style="font-family: Arial; text-align: center; padding: 50px;">
       <h1>✅ Winter Team Bot работает!</h1>
-      <p>📊 Стаффа: ${staffStats.size}</p>
-      <p>💾 Бэкап: ${backup ? `${backup.totalChannels} каналов` : 'не создан'}</p>
-      <p>🗑️ Удалённых каналов: ${deletedCollection?.size || 0}</p>
-      <p>👋 Приветствия ОТКЛЮЧЕНЫ</p>
+      <p>📤 /export_backup - экспорт в JSON</p>
+      <p>📥 /import_backup - импорт из JSON</p>
       <p>⏰ Аптайм: ${getUptime()}</p>
     </body>
     </html>
