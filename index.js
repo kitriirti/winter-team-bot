@@ -77,10 +77,8 @@ function saveStats() {
   }
 }
 
-// Загружаем статистику при старте
 loadStats();
 
-// Проверяем недельную статистику
 const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
 if (stats.stack1.weekStart < weekAgo) {
   stats.stack1.weekAccepted = 0;
@@ -156,7 +154,7 @@ async function sendLog(guild, embed) {
   } catch (error) {}
 }
 
-// ========== ОБНОВЛЕНИЕ РОЛИ СТАФФА (ПРОВЕРЯЕТ ВСЕ РОЛИ) ==========
+// ========== ОБНОВЛЕНИЕ РОЛИ СТАФФА ==========
 async function updateStaffRole(guild, staffId, acceptedCount) {
   try {
     const member = await guild.members.fetch(staffId).catch(() => null);
@@ -164,7 +162,6 @@ async function updateStaffRole(guild, staffId, acceptedCount) {
     
     const roleName = `📋 Принял ${acceptedCount} заявок`;
     
-    // Удаляем старые роли со статистикой
     const oldRoles = member.roles.cache.filter(r => r.name.startsWith('📋 Принял '));
     for (const role of oldRoles.values()) {
       await member.roles.remove(role).catch(() => {});
@@ -173,7 +170,6 @@ async function updateStaffRole(guild, staffId, acceptedCount) {
       }
     }
     
-    // Создаём или находим новую роль
     let newRole = guild.roles.cache.find(r => r.name === roleName);
     if (!newRole) {
       newRole = await guild.roles.create({
@@ -186,11 +182,11 @@ async function updateStaffRole(guild, staffId, acceptedCount) {
     await member.roles.add(newRole);
     console.log(`✅ Роль "${roleName}" выдана ${member.user.tag}`);
   } catch (error) {
-    console.error(`❌ Ошибка обновления роли для ${staffId}:`, error);
+    console.error(`❌ Ошибка обновления роли:`, error);
   }
 }
 
-// ========== ПРОВЕРКА И ОБНОВЛЕНИЕ ВСЕХ РОЛЕЙ СТАФФА ==========
+// ========== СИНХРОНИЗАЦИЯ РОЛЕЙ СТАФФА ==========
 async function syncAllStaffRoles(guild) {
   try {
     console.log('🔄 Синхронизация ролей стаффа...');
@@ -199,7 +195,6 @@ async function syncAllStaffRoles(guild) {
       await updateStaffRole(guild, staffId, data.accepted);
     }
     
-    // Также проверяем, нет ли у кого-то роли, но нет в статистике
     const cfg = getConfig();
     const staffRoles = [cfg.staffRoleId_stack1, cfg.staffRoleId_stack2].filter(Boolean);
     
@@ -209,9 +204,8 @@ async function syncAllStaffRoles(guild) {
       
       for (const member of role.members.values()) {
         if (!staffStats.has(member.id)) {
-          // Если у стаффа нет статистики, добавляем с 0
           staffStats.set(member.id, { accepted: 0, tag: member.user.tag });
-          console.log(`➕ Добавлен в статистику: ${member.user.tag} (0 заявок)`);
+          console.log(`➕ Добавлен в статистику: ${member.user.tag}`);
         }
       }
     }
@@ -219,7 +213,7 @@ async function syncAllStaffRoles(guild) {
     saveStats();
     console.log('✅ Синхронизация ролей завершена');
   } catch (error) {
-    console.error('❌ Ошибка синхронизации ролей:', error);
+    console.error('❌ Ошибка синхронизации:', error);
   }
 }
 
@@ -235,7 +229,10 @@ function scheduleInactiveDelete(channelId, ticketId) {
         if (messages.size <= 1 || (messages.size === 2 && botMessages.size >= 1)) {
           await channel.send('🗑️ **Тикет автоматически закрыт (неактивность 48 часов).**');
           setTimeout(async () => {
-            try { await channel.delete(); } catch (error) {}
+            try { 
+              await channel.delete(); 
+              console.log(`🎫 Тикет ${channel.name} удалён по неактивности`);
+            } catch (error) {}
           }, 5000);
         }
       }
@@ -271,6 +268,23 @@ async function createTicketMessage(channel, stackType) {
   return await channel.send({ embeds: [embed], components: [row] });
 }
 
+// ========== ПРОВЕРКА: ЭТО ТИКЕТ-КАНАЛ? ==========
+function isTicketChannel(channel) {
+  const cfg = getConfig();
+  
+  // Проверка по названию
+  if (channel.name.startsWith('🔥｜') || channel.name.startsWith('💧｜')) {
+    return true;
+  }
+  
+  // Проверка по категории
+  if (cfg.ticketCategory && channel.parentId === cfg.ticketCategory) {
+    return true;
+  }
+  
+  return false;
+}
+
 // ========== СОХРАНЕНИЕ И ВОССТАНОВЛЕНИЕ КАНАЛОВ ==========
 async function saveAllChannels(guild) {
   try {
@@ -279,6 +293,9 @@ async function saveAllChannels(guild) {
     const standaloneChannels = [];
     
     for (const channel of guild.channels.cache.values()) {
+      // Пропускаем тикет-каналы
+      if (isTicketChannel(channel)) continue;
+      
       if (channel.type === ChannelType.GuildCategory) {
         categories.push({
           id: channel.id, name: channel.name, type: 'category',
@@ -288,6 +305,9 @@ async function saveAllChannels(guild) {
     }
     
     for (const channel of guild.channels.cache.values()) {
+      // Пропускаем тикет-каналы
+      if (isTicketChannel(channel)) continue;
+      
       if (channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildVoice) {
         const channelData = {
           id: channel.id, name: channel.name,
@@ -309,7 +329,7 @@ async function saveAllChannels(guild) {
     
     const backupData = {
       guildId: guild.id, guildName: guild.name, savedAt: new Date(),
-      categories, standaloneChannels, totalChannels: guild.channels.cache.size
+      categories, standaloneChannels, totalChannels: categories.length + standaloneChannels.length
     };
     
     savedChannels.set('full_backup', backupData);
@@ -428,13 +448,47 @@ async function restoreFromBackup(guild) {
   }
 }
 
-// ========== АНТИ-СНОС ==========
+// ========== АНТИ-СНОС (ТИКЕТЫ НЕ ВОССТАНАВЛИВАЮТСЯ) ==========
 client.on('channelDelete', async (channel) => {
   try {
     if (channel.type === ChannelType.DM || !channel.guild) return;
     
     const guild = channel.guild;
     
+    // 🔥 ПРОВЕРКА: ЭТО ТИКЕТ-КАНАЛ?
+    if (isTicketChannel(channel)) {
+      console.log(`🎫 Тикет-канал "${channel.name}" удалён — НЕ восстанавливаем`);
+      
+      // Очищаем тикет из активных
+      for (const [ticketId, ticket] of activeTickets) {
+        if (ticket.channelId === channel.id) {
+          clearTimeout(autoDeleteTimeouts.get(ticketId));
+          activeTickets.delete(ticketId);
+          autoDeleteTimeouts.delete(ticketId);
+          console.log(`🧹 Тикет ${ticketId} удалён из памяти`);
+          break;
+        }
+      }
+      
+      // Логируем удаление тикета
+      const cfg = getConfig();
+      if (cfg.logChannelId) {
+        const logChannel = await guild.channels.fetch(cfg.logChannelId).catch(() => null);
+        if (logChannel) {
+          const embed = new EmbedBuilder()
+            .setTitle('🎫 ТИКЕТ УДАЛЁН')
+            .setColor(0x808080)
+            .setDescription(`Тикет-канал **${channel.name}** был удалён.`)
+            .setTimestamp();
+          
+          await logChannel.send({ embeds: [embed] }).catch(() => {});
+        }
+      }
+      
+      return; // НЕ ВОССТАНАВЛИВАЕМ!
+    }
+    
+    // Дальше обычная логика анти-сноса для НЕ тикетов
     await new Promise(resolve => setTimeout(resolve, 1500));
     
     const auditLogs = await guild.fetchAuditLogs({ type: 12, limit: 10 });
@@ -615,7 +669,7 @@ client.on('inviteDelete', async (invite) => {
 // ========== ЗАПУСК БОТА ==========
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} запущен!`);
-  console.log(`🛡️ АНТИ-СНОС АКТИВЕН: 1 канал = таймаут 24ч`);
+  console.log(`🛡️ АНТИ-СНОС АКТИВЕН (тикеты НЕ восстанавливаются)`);
   
   setInterval(() => {
     client.user.setActivity(`🛡️ ${getUptimeShort()}`, { type: 3 });
@@ -634,8 +688,6 @@ client.once('ready', async () => {
     } catch (error) {}
     
     await saveAllChannels(guild);
-    
-    // Синхронизируем роли стаффа при запуске
     await syncAllStaffRoles(guild);
     
     console.log(`📊 Сервер: ${guild.name} | Участников: ${guild.memberCount}`);
@@ -1090,7 +1142,17 @@ client.on('interactionCreate', async interaction => {
       await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0x00FF00)], components: [] });
       await interaction.channel.send(`<@${userId}> 🎉 Заявка принята!`);
       
-      setTimeout(() => interaction.channel.delete().catch(() => {}), 30 * 60 * 1000);
+      // Удаляем канал через 30 минут
+      setTimeout(async () => {
+        try {
+          const ch = await interaction.guild.channels.fetch(interaction.channel.id).catch(() => null);
+          if (ch) {
+            await ch.delete();
+            console.log(`🎫 Тикет ${ch.name} удалён через 30 минут`);
+          }
+        } catch (error) {}
+      }, 30 * 60 * 1000);
+      
       await interaction.channel.send(`⏰ **Канал будет удалён через 30 минут.**`);
       
       activeTickets.delete(ticketId);
@@ -1201,9 +1263,9 @@ http.createServer((req, res) => {
     <head><title>Winter Team Bot</title></head>
     <body style="font-family: Arial; text-align: center; padding: 50px;">
       <h1>✅ Winter Team Bot работает!</h1>
-      <p>📊 Стаффа в статистике: ${staffStats.size}</p>
+      <p>📊 Стаффа: ${staffStats.size}</p>
       <p>💾 Бэкап: ${backup ? `${backup.totalChannels} каналов` : 'не создан'}</p>
-      <p>🛡️ Анти-снос: 1 канал = таймаут 24ч</p>
+      <p>🎫 Тикеты НЕ восстанавливаются</p>
       <p>⏰ Аптайм: ${getUptime()}</p>
     </body>
     </html>
