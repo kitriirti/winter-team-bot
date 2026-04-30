@@ -15,7 +15,7 @@ const client = new Client({
 });
 
 // ========== ХРАНИЛИЩА В ПАМЯТИ ==========
-const globalBackup = new Collection(); // ГЛОБАЛЬНЫЙ БЭКАП (доступен с любого сервера)
+const globalBackup = new Collection();
 const deletedChannels = new Collection();
 const activeTickets = new Collection();
 const autoDeleteTimeouts = new Collection();
@@ -24,21 +24,28 @@ let staffStats = new Collection();
 const invites = new Collection();
 
 // ========== ПЕРЕМЕННЫЕ СОСТОЯНИЯ ==========
-let ticketStatus = { stack1: true, stack2: true };
+let ticketOpen = true;
 let stats = {
-  stack1: { accepted: 0, denied: 0, autoDenied: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() },
-  stack2: { accepted: 0, denied: 0, autoDenied: 0, weekAccepted: 0, weekDenied: 0, weekStart: Date.now() }
+  accepted: 0, denied: 0, autoDenied: 0,
+  weekAccepted: 0, weekDenied: 0, weekStart: Date.now()
 };
 
 const startTime = Date.now();
+
+// ========== ПРОВЕРКА НЕДЕЛЬНОЙ СТАТИСТИКИ ==========
+const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+if (stats.weekStart < weekAgo) {
+  stats.weekAccepted = 0;
+  stats.weekDenied = 0;
+  stats.weekStart = Date.now();
+}
 
 // ========== ПОЛУЧЕНИЕ КОНФИГУРАЦИИ ==========
 const getConfig = () => {
   return {
     token: process.env.DISCORD_TOKEN,
     ticketCategory: process.env.TICKET_CATEGORY,
-    staffRoleId_stack1: process.env.STAFF_ROLE_STACK1,
-    staffRoleId_stack2: process.env.STAFF_ROLE_STACK2,
+    staffRoleId: process.env.STAFF_ROLE_ID,
     logChannelId: process.env.LOG_CHANNEL_ID,
     memberRoleId: process.env.MEMBER_ROLE_ID,
     autoRoleId: process.env.AUTO_ROLE_ID
@@ -147,36 +154,32 @@ function scheduleInactiveDelete(channelId, ticketId) {
   autoDeleteTimeouts.set(ticketId, timeout);
 }
 
-async function createTicketMessage(channel, stackType) {
-  const isStack1 = stackType === 'stack1';
-  const stackName = isStack1 ? 'СТАК 1' : 'СТАК 2';
-  const hours = isStack1 ? '3500' : '2500';
-  
+async function createTicketMessage(channel) {
   const embed = new EmbedBuilder()
-    .setTitle('📋 ПОДАТЬ ЗАЯВКУ В КЛАН WT')
+    .setTitle('📋 ПОДАТЬ ЗАЯВКУ В RUNE')
     .setDescription(
-      `**ТРЕБОВАНИЯ ДЛЯ ${stackName}:**\n\n` +
-      `● ${hours} часов на аккаунте и более\n● 15+ лет\n● Иметь хороший микрофон\n` +
+      `**ТРЕБОВАНИЯ:**\n\n` +
+      `● 2500+ часов на аккаунте\n● 15+ лет\n● Иметь хороший микрофон\n` +
       `● Умение слушать коллы и адекватно реагировать на критику\n● Минимум 6 часов стабильного онлайна в день\n\n` +
-      `**Статус набора:** ${ticketStatus[stackType] ? '🟢 Открыт' : '🔴 Закрыт'}\n\nНажмите кнопку ниже, чтобы заполнить анкету.`
+      `**Статус набора:** ${ticketOpen ? '🟢 Открыт' : '🔴 Закрыт'}\n\nНажмите кнопку ниже, чтобы заполнить анкету.`
     )
     .setColor(0x3498DB)
     .setTimestamp();
 
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`create_ticket_${stackType}`).setLabel(`📝 Подать заявку в ${stackName}`).setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`toggle_${stackType}`).setEmoji(ticketStatus[stackType] ? '🟢' : '🔴').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId('create_ticket').setLabel('📝 Подать заявку').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('toggle_ticket').setEmoji(ticketOpen ? '🟢' : '🔴').setStyle(ButtonStyle.Secondary)
   );
 
   return await channel.send({ embeds: [embed], components: [row] });
 }
 
 function isTicketChannel(channel) {
-  if (channel.name.startsWith('🔥｜') || channel.name.startsWith('💧｜')) return true;
+  if (channel.name.startsWith('📋｜')) return true;
   return false;
 }
 
-// ========== СОХРАНЕНИЕ СТРУКТУРЫ КАНАЛОВ В ГЛОБАЛЬНУЮ ПАМЯТЬ ==========
+// ========== СОХРАНЕНИЕ В ГЛОБАЛЬНЫЙ БЭКАП ==========
 async function saveToGlobalBackup(guild) {
   try {
     const categories = [];
@@ -224,21 +227,17 @@ async function saveToGlobalBackup(guild) {
       sourceGuildId: guild.id,
       sourceGuildName: guild.name,
       savedAt: new Date().toISOString(),
-      savedBy: 'global_backup',
       categories: categories,
       standaloneChannels: standaloneChannels,
       totalChannels: categories.reduce((acc, cat) => acc + cat.channels.length, 0) + standaloneChannels.length
     };
     
-    // Сохраняем в глобальную память (доступно с любого сервера)
     globalBackup.set('last_backup', backupData);
-    
-    console.log(`🌍 ГЛОБАЛЬНЫЙ БЭКАП сохранён: ${categories.length} категорий, ${backupData.totalChannels} каналов`);
-    console.log(`📋 Сервер-источник: ${guild.name}`);
+    console.log(`🌍 Глобальный бэкап сохранён: ${backupData.totalChannels} каналов`);
     
     return backupData;
   } catch (error) {
-    console.error('❌ Ошибка сохранения в глобальный бэкап:', error);
+    console.error('❌ Ошибка сохранения:', error);
     return null;
   }
 }
@@ -256,7 +255,6 @@ async function restoreFromGlobalBackup(guild) {
     let createdChannels = 0;
     const categoryMap = new Map();
     
-    // Создаём категории
     for (const cat of backupData.categories) {
       try {
         const existing = guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && c.name === cat.name);
@@ -268,87 +266,57 @@ async function restoreFromGlobalBackup(guild) {
           });
           categoryMap.set(cat.name, newCategory.id);
           createdCategories++;
-          console.log(`📁 Создана категория: ${cat.name}`);
           await new Promise(resolve => setTimeout(resolve, 500));
         } else {
           categoryMap.set(cat.name, existing.id);
-          console.log(`📁 Категория уже существует: ${cat.name}`);
         }
-      } catch (e) {
-        console.error(`❌ Ошибка категории ${cat.name}:`, e.message);
-      }
+      } catch (e) {}
     }
     
-    // Создаём каналы в категориях
     for (const cat of backupData.categories) {
       for (const ch of cat.channels) {
         try {
           const parentId = categoryMap.get(ch.parentName);
-          
           const existing = guild.channels.cache.find(c => c.name === ch.name && c.parentId === parentId);
           if (!existing) {
             if (ch.type === 'text') {
               await guild.channels.create({
-                name: ch.name,
-                type: ChannelType.GuildText,
-                parent: parentId,
-                position: ch.position,
-                topic: ch.topic || undefined,
-                nsfw: ch.nsfw || false,
-                rateLimitPerUser: ch.rateLimitPerUser || 0
+                name: ch.name, type: ChannelType.GuildText, parent: parentId,
+                position: ch.position, topic: ch.topic || undefined,
+                nsfw: ch.nsfw || false, rateLimitPerUser: ch.rateLimitPerUser || 0
               });
             } else if (ch.type === 'voice') {
               await guild.channels.create({
-                name: ch.name,
-                type: ChannelType.GuildVoice,
-                parent: parentId,
-                position: ch.position,
-                bitrate: ch.bitrate || 64000,
-                userLimit: ch.userLimit || 0
+                name: ch.name, type: ChannelType.GuildVoice, parent: parentId,
+                position: ch.position, bitrate: ch.bitrate || 64000, userLimit: ch.userLimit || 0
               });
             }
             createdChannels++;
-            console.log(`📋 Создан канал: ${ch.name}`);
             await new Promise(resolve => setTimeout(resolve, 500));
-          } else {
-            console.log(`📋 Канал уже существует: ${ch.name}`);
           }
-        } catch (e) {
-          console.error(`❌ Ошибка канала ${ch.name}:`, e.message);
-        }
+        } catch (e) {}
       }
     }
     
-    // Создаём каналы вне категорий
     for (const ch of backupData.standaloneChannels) {
       try {
         const existing = guild.channels.cache.find(c => c.name === ch.name && !c.parentId);
         if (!existing) {
           if (ch.type === 'text') {
             await guild.channels.create({
-              name: ch.name,
-              type: ChannelType.GuildText,
-              position: ch.position,
-              topic: ch.topic || undefined,
-              nsfw: ch.nsfw || false,
-              rateLimitPerUser: ch.rateLimitPerUser || 0
+              name: ch.name, type: ChannelType.GuildText, position: ch.position,
+              topic: ch.topic || undefined, nsfw: ch.nsfw || false, rateLimitPerUser: ch.rateLimitPerUser || 0
             });
           } else if (ch.type === 'voice') {
             await guild.channels.create({
-              name: ch.name,
-              type: ChannelType.GuildVoice,
-              position: ch.position,
-              bitrate: ch.bitrate || 64000,
-              userLimit: ch.userLimit || 0
+              name: ch.name, type: ChannelType.GuildVoice, position: ch.position,
+              bitrate: ch.bitrate || 64000, userLimit: ch.userLimit || 0
             });
           }
           createdChannels++;
-          console.log(`📋 Создан канал: ${ch.name}`);
           await new Promise(resolve => setTimeout(resolve, 500));
         }
-      } catch (e) {
-        console.error(`❌ Ошибка канала ${ch.name}:`, e.message);
-      }
+      } catch (e) {}
     }
     
     return { 
@@ -563,14 +531,13 @@ client.on('inviteDelete', async (invite) => {
 // ========== ЗАПУСК БОТА ==========
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} запущен!`);
-  console.log(`🌍 ГЛОБАЛЬНЫЙ БЭКАП АКТИВЕН (сохраняется в памяти бота)`);
-  console.log(`📋 Серверов: ${client.guilds.cache.size}`);
+  console.log(`🌍 ГЛОБАЛЬНЫЙ БЭКАП АКТИВЕН`);
   
   setInterval(() => {
-    client.user.setActivity(`🌍 ${getUptimeShort()}`, { type: 3 });
+    client.user.setActivity(`RUNE | ${getUptimeShort()}`, { type: 3 });
   }, 60000);
   
-  client.user.setActivity(`🌍 ${getUptimeShort()}`, { type: 3 });
+  client.user.setActivity(`RUNE | ${getUptimeShort()}`, { type: 3 });
   
   client.guilds.cache.forEach(async (guild) => {
     try {
@@ -581,8 +548,7 @@ client.once('ready', async () => {
   
   try {
     await client.application.commands.set([
-      { name: 'ticket_stack1', description: 'Создать сообщение для подачи заявок в СТАК 1 (3500+ часов)' },
-      { name: 'ticket_stack2', description: 'Создать сообщение для подачи заявок в СТАК 2 (2500+ часов)' },
+      { name: 'ticket', description: 'Создать сообщение для подачи заявок' },
       { name: 'stats', description: 'Показать статистику заявок за неделю (только для стаффа)' },
       { name: 'ping', description: 'Проверить задержку бота' },
       { name: 'uptime', description: 'Показать время работы бота' },
@@ -611,12 +577,11 @@ client.once('ready', async () => {
 // ========== ОБРАБОТКА ВЗАИМОДЕЙСТВИЙ ==========
 client.on('interactionCreate', async interaction => {
   const cfg = getConfig();
-  const hasStaff = (cfg.staffRoleId_stack1 && interaction.member?.roles?.cache?.has(cfg.staffRoleId_stack1)) || 
-                   (cfg.staffRoleId_stack2 && interaction.member?.roles?.cache?.has(cfg.staffRoleId_stack2)) ||
+  const hasStaff = (cfg.staffRoleId && interaction.member?.roles?.cache?.has(cfg.staffRoleId)) ||
                    interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
   const isAdmin = interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
   
-  // ========== /save_backup - Сохранить в глобальный бэкап ==========
+  // ========== /save_backup ==========
   if (interaction.isCommand() && interaction.commandName === 'save_backup') {
     if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
     
@@ -648,7 +613,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
   
-  // ========== /restore_backup - Восстановить из глобального бэкапа ==========
+  // ========== /restore_backup ==========
   if (interaction.isCommand() && interaction.commandName === 'restore_backup') {
     if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
     
@@ -688,7 +653,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
   
-  // ========== /backup_info - Информация о глобальном бэкапе ==========
+  // ========== /backup_info ==========
   if (interaction.isCommand() && interaction.commandName === 'backup_info') {
     if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
     
@@ -696,7 +661,7 @@ client.on('interactionCreate', async interaction => {
     
     if (!backupData) {
       return interaction.reply({ 
-        content: '❌ Глобальный бэкап не создан!\n\nИспользуйте `/save_backup` на сервере-источнике.', 
+        content: '❌ Глобальный бэкап не создан!', 
         ephemeral: true 
       });
     }
@@ -706,12 +671,9 @@ client.on('interactionCreate', async interaction => {
       .setColor(0x3498DB)
       .setDescription(
         `**Сервер-источник:** ${backupData.sourceGuildName}\n` +
-        `**ID сервера:** ${backupData.sourceGuildId}\n` +
         `**Сохранён:** ${new Date(backupData.savedAt).toLocaleString('ru-RU')}\n` +
         `**Категорий:** ${backupData.categories.length}\n` +
-        `**Каналов всего:** ${backupData.totalChannels}\n\n` +
-        `**Доступные команды:**\n` +
-        `\`/restore_backup\` — восстановить на этом сервере`
+        `**Каналов всего:** ${backupData.totalChannels}`
       )
       .setTimestamp();
     
@@ -762,7 +724,7 @@ client.on('interactionCreate', async interaction => {
     
     const channels = Array.from(deletedChannels.values());
     const list = channels.slice(0, 20).map((ch, i) => 
-      `**${i + 1}.** ${ch.type === 'text' ? '💬' : ch.type === 'voice' ? '🔊' : '📁'} **${ch.name}** — ${new Date(ch.deletedAt).toLocaleTimeString('ru-RU')}`
+      `**${i + 1}.** ${ch.type === 'text' ? '💬' : ch.type === 'voice' ? '🔊' : '📁'} **${ch.name}**`
     ).join('\n');
     
     const embed = new EmbedBuilder()
@@ -807,7 +769,7 @@ client.on('interactionCreate', async interaction => {
     const sent = await interaction.reply({ content: '🏓 Пинг...', fetchReply: true });
     await interaction.editReply({ 
       content: `🏓 Понг! **${sent.createdTimestamp - interaction.createdTimestamp}ms** | API: **${client.ws.ping}ms**\n` +
-               `🌍 Глобальный бэкап: ${backup ? `${backup.sourceGuildName} (${backup.totalChannels} каналов)` : 'не создан'}`
+               `🌍 Бэкап: ${backup ? `${backup.sourceGuildName} (${backup.totalChannels} кан.)` : 'не создан'}`
     });
   }
   
@@ -891,10 +853,6 @@ client.on('interactionCreate', async interaction => {
   if (interaction.isCommand() && interaction.commandName === 'stats') {
     if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
     
-    const totalWeekAccepted = stats.stack1.weekAccepted + stats.stack2.weekAccepted;
-    const totalWeekDenied = stats.stack1.weekDenied + stats.stack2.weekDenied;
-    const totalAutoDenied = (stats.stack1.autoDenied || 0) + (stats.stack2.autoDenied || 0);
-    
     const sortedStaff = [...staffStats.entries()]
       .sort((a, b) => b[1].accepted - a[1].accepted)
       .slice(0, 10);
@@ -907,10 +865,8 @@ client.on('interactionCreate', async interaction => {
       .setTitle('📊 СТАТИСТИКА ЗА НЕДЕЛЮ')
       .setColor(0x3498DB)
       .addFields(
-        { name: '🔥 СТАК 1', value: `✅ ${stats.stack1.weekAccepted} | ❌ ${stats.stack1.weekDenied}`, inline: true },
-        { name: '💧 СТАК 2', value: `✅ ${stats.stack2.weekAccepted} | ❌ ${stats.stack2.weekDenied}`, inline: true },
-        { name: '━━━━━━━━━━━━━━━━━━', value: `🎯 **Всего:** ✅ ${totalWeekAccepted} | ❌ ${totalWeekDenied} | 🤖 ${totalAutoDenied}`, inline: false },
-        { name: '🔧 Статус набора', value: `🔥 ${ticketStatus.stack1 ? '🟢' : '🔴'} | 💧 ${ticketStatus.stack2 ? '🟢' : '🔴'}`, inline: true },
+        { name: '📋 ЗАЯВКИ', value: `✅ Принято: ${stats.weekAccepted}\n❌ Отклонено: ${stats.weekDenied}\n🤖 Авто-отклонено: ${stats.autoDenied || 0}`, inline: true },
+        { name: '🔧 Статус набора', value: ticketOpen ? '🟢 Открыт' : '🔴 Закрыт', inline: true },
         { name: '👑 Топ стаффа', value: staffList, inline: false }
       )
       .setTimestamp();
@@ -918,13 +874,12 @@ client.on('interactionCreate', async interaction => {
     await interaction.reply({ embeds: [embed], ephemeral: true });
   }
   
-  // ========== /ticket_stack1 и /ticket_stack2 ==========
-  if (interaction.isCommand() && (interaction.commandName === 'ticket_stack1' || interaction.commandName === 'ticket_stack2')) {
+  // ========== /ticket ==========
+  if (interaction.isCommand() && interaction.commandName === 'ticket') {
     if (!isAdmin) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
     
-    const stack = interaction.commandName === 'ticket_stack1' ? 'stack1' : 'stack2';
-    await createTicketMessage(interaction.channel, stack);
-    await interaction.reply({ content: `✅ Сообщение для ${stack === 'stack1' ? 'СТАК 1' : 'СТАК 2'} создано!`, ephemeral: true });
+    await createTicketMessage(interaction.channel);
+    await interaction.reply({ content: '✅ Сообщение для подачи заявок создано!', ephemeral: true });
   }
   
   // ========== /send ==========
@@ -933,7 +888,7 @@ client.on('interactionCreate', async interaction => {
     
     const channel = interaction.options.getChannel('channel');
     const text = interaction.options.getString('text') || '';
-    const customName = interaction.options.getString('name') || 'Winter Team';
+    const customName = interaction.options.getString('name') || 'RUNE';
     const avatarUrl = interaction.options.getString('avatar') || client.user.displayAvatarURL();
     
     if (!channel.isTextBased()) return interaction.reply({ content: '❌ Канал должен быть текстовым!', ephemeral: true });
@@ -950,37 +905,35 @@ client.on('interactionCreate', async interaction => {
     }
   }
   
-  // ========== КНОПКИ СТАТУСА НАБОРА ==========
-  if (interaction.isButton() && (interaction.customId === 'toggle_stack1' || interaction.customId === 'toggle_stack2')) {
+  // ========== КНОПКА СТАТУСА НАБОРА ==========
+  if (interaction.isButton() && interaction.customId === 'toggle_ticket') {
     if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
     
-    const stack = interaction.customId === 'toggle_stack1' ? 'stack1' : 'stack2';
-    ticketStatus[stack] = !ticketStatus[stack];
+    ticketOpen = !ticketOpen;
     
     const embed = EmbedBuilder.from(interaction.message.embeds[0]).setDescription(
-      interaction.message.embeds[0].description.replace(/Статус набора:.*/, `**Статус набора:** ${ticketStatus[stack] ? '🟢 Открыт' : '🔴 Закрыт'}`)
+      interaction.message.embeds[0].description.replace(/Статус набора:.*/, `**Статус набора:** ${ticketOpen ? '🟢 Открыт' : '🔴 Закрыт'}`)
     );
     
     const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`create_ticket_${stack}`).setLabel(`📝 Подать заявку в ${stack === 'stack1' ? 'СТАК 1' : 'СТАК 2'}`).setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`toggle_${stack}`).setEmoji(ticketStatus[stack] ? '🟢' : '🔴').setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId('create_ticket').setLabel('📝 Подать заявку').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('toggle_ticket').setEmoji(ticketOpen ? '🟢' : '🔴').setStyle(ButtonStyle.Secondary)
     );
     
     await interaction.update({ embeds: [embed], components: [row] });
   }
   
-  // ========== КНОПКИ ОТКРЫТИЯ АНКЕТЫ ==========
-  if (interaction.isButton() && (interaction.customId === 'create_ticket_stack1' || interaction.customId === 'create_ticket_stack2')) {
-    const stack = interaction.customId === 'create_ticket_stack1' ? 'stack1' : 'stack2';
-    if (!ticketStatus[stack]) return interaction.reply({ content: '❌ Набор закрыт!', ephemeral: true });
+  // ========== КНОПКА ОТКРЫТИЯ АНКЕТЫ ==========
+  if (interaction.isButton() && interaction.customId === 'create_ticket') {
+    if (!ticketOpen) return interaction.reply({ content: '❌ Набор закрыт!', ephemeral: true });
     
-    const modal = new ModalBuilder().setCustomId(`app_${stack}`).setTitle(`Заявка в ${stack === 'stack1' ? 'СТАК 1' : 'СТАК 2'}`);
+    const modal = new ModalBuilder().setCustomId('app_form').setTitle('Заявка в RUNE');
     
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('Имя').setPlaceholder('Артём').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(50)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('age').setLabel('Возраст (цифры)').setPlaceholder('15').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(3)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('steam').setLabel('Steam ссылка').setPlaceholder('https://steamcommunity.com/...').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('hours').setLabel('Часы (цифры)').setPlaceholder(stack === 'stack1' ? '3500' : '2500').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(10)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('hours').setLabel('Часы (цифры)').setPlaceholder('2500').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(10)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('role').setLabel('Роль').setPlaceholder('Строитель, ПвПшник...').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100))
     );
     
@@ -988,8 +941,7 @@ client.on('interactionCreate', async interaction => {
   }
   
   // ========== ОБРАБОТКА АНКЕТЫ ==========
-  if (interaction.isModalSubmit() && interaction.customId.startsWith('app_')) {
-    const stack = interaction.customId.replace('app_', '');
+  if (interaction.isModalSubmit() && interaction.customId === 'app_form') {
     const name = interaction.fields.getTextInputValue('name');
     const age = parseInt(interaction.fields.getTextInputValue('age'));
     const steam = interaction.fields.getTextInputValue('steam');
@@ -1000,18 +952,21 @@ client.on('interactionCreate', async interaction => {
     if (!steam.includes('steamcommunity.com')) return interaction.reply({ content: '❌ Некорректная Steam ссылка!', ephemeral: true });
     if (isNaN(hours)) return interaction.reply({ content: '❌ Часы - только цифры!', ephemeral: true });
     
-    const minHours = stack === 'stack1' ? 3500 : 2500;
-    if (hours < minHours) {
-      if (stack === 'stack1') { stats.stack1.denied++; stats.stack1.weekDenied++; stats.stack1.autoDenied = (stats.stack1.autoDenied||0)+1; }
-      else { stats.stack2.denied++; stats.stack2.weekDenied++; stats.stack2.autoDenied = (stats.stack2.autoDenied||0)+1; }
+    if (hours < 2500) {
+      stats.denied++;
+      stats.weekDenied++;
+      stats.autoDenied = (stats.autoDenied || 0) + 1;
       
-      return interaction.reply({ embeds: [new EmbedBuilder().setTitle('❌ Отклонено').setDescription(`Часов: ${hours}, нужно: ${minHours}+`).setColor(0xFF0000)], ephemeral: true });
+      return interaction.reply({ 
+        embeds: [new EmbedBuilder().setTitle('❌ Отклонено').setDescription(`Часов: ${hours}, нужно: 2500+`).setColor(0xFF0000)], 
+        ephemeral: true 
+      });
     }
     
     await interaction.reply({ content: '⏳ Создаю тикет...', ephemeral: true });
     
     try {
-      const staffRole = stack === 'stack1' ? cfg.staffRoleId_stack1 : cfg.staffRoleId_stack2;
+      const staffRole = cfg.staffRoleId;
       
       const permissionOverwrites = [
         { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
@@ -1023,7 +978,7 @@ client.on('interactionCreate', async interaction => {
       }
       
       const channelOptions = {
-        name: `${stack === 'stack1' ? '🔥' : '💧'}｜${stack === 'stack1' ? 'СТАК-1' : 'СТАК-2'}｜${interaction.user.username}`,
+        name: `📋｜заявка｜${interaction.user.username}`,
         type: ChannelType.GuildText,
         permissionOverwrites: permissionOverwrites
       };
@@ -1037,21 +992,21 @@ client.on('interactionCreate', async interaction => {
       
       const channel = await interaction.guild.channels.create(channelOptions);
       
-      const ticketId = `${interaction.user.id}_${stack}`;
-      activeTickets.set(ticketId, { channelId: channel.id, userId: interaction.user.id, stackType: stack, status: 'pending', createdAt: Date.now() });
+      const ticketId = interaction.user.id;
+      activeTickets.set(ticketId, { channelId: channel.id, userId: interaction.user.id, status: 'pending', createdAt: Date.now() });
       
       scheduleInactiveDelete(channel.id, ticketId);
       
       const embed = new EmbedBuilder()
         .setColor(0x3498DB)
         .setThumbnail(interaction.user.displayAvatarURL())
-        .setDescription(`### <@${interaction.user.id}> подал заявку в **${stack === 'stack1' ? 'СТАК-1' : 'СТАК-2'}**\n━━━━━━━━━━━━━━━━━━\n👤 **Имя:** ${name}\n🎂 **Возраст:** ${age}\n🔗 **Steam:** ${steam}\n⏰ **Часы:** ${hours} ч\n🎯 **Роль:** ${role}${getWorkingHoursMessage()}`);
+        .setDescription(`### <@${interaction.user.id}> подал заявку в RUNE\n━━━━━━━━━━━━━━━━━━\n👤 **Имя:** ${name}\n🎂 **Возраст:** ${age}\n🔗 **Steam:** ${steam}\n⏰ **Часы:** ${hours} ч\n🎯 **Роль:** ${role}${getWorkingHoursMessage()}`);
       
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`accept_${interaction.user.id}_${stack}`).setEmoji('✅').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`consider_${interaction.user.id}_${stack}`).setEmoji('⏳').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`call_${interaction.user.id}_${stack}`).setEmoji('📞').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`deny_${interaction.user.id}_${stack}`).setEmoji('❌').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`accept_${interaction.user.id}`).setEmoji('✅').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`consider_${interaction.user.id}`).setEmoji('⏳').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`call_${interaction.user.id}`).setEmoji('📞').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`deny_${interaction.user.id}`).setEmoji('❌').setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId(`close_${channel.id}`).setEmoji('🔒').setStyle(ButtonStyle.Secondary)
       );
       
@@ -1090,14 +1045,14 @@ client.on('interactionCreate', async interaction => {
     }
     
     if (id.startsWith('accept_')) {
-      const [_, userId, stack] = id.split('_');
+      const userId = id.replace('accept_', '');
       if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
       
-      const ticketId = `${userId}_${stack}`;
+      const ticketId = userId;
       clearTimeout(autoDeleteTimeouts.get(ticketId));
       
-      if (stack === 'stack1') { stats.stack1.accepted++; stats.stack1.weekAccepted++; } 
-      else { stats.stack2.accepted++; stats.stack2.weekAccepted++; }
+      stats.accepted++;
+      stats.weekAccepted++;
       
       const staffId = interaction.user.id;
       if (!staffStats.has(staffId)) staffStats.set(staffId, { accepted: 0, tag: interaction.user.tag });
@@ -1110,7 +1065,7 @@ client.on('interactionCreate', async interaction => {
       }
       
       await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0x00FF00)], components: [] });
-      await interaction.channel.send(`<@${userId}> 🎉 Заявка принята!`);
+      await interaction.channel.send(`<@${userId}> 🎉 Заявка принята! Добро пожаловать в RUNE!`);
       
       setTimeout(async () => {
         try {
@@ -1125,7 +1080,7 @@ client.on('interactionCreate', async interaction => {
     }
     
     if (id.startsWith('consider_')) {
-      const [_, userId, stack] = id.split('_');
+      const userId = id.replace('consider_', '');
       if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
       
       await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0xFFA500)], components: interaction.message.components });
@@ -1133,7 +1088,7 @@ client.on('interactionCreate', async interaction => {
     }
     
     if (id.startsWith('call_')) {
-      const [_, userId, stack] = id.split('_');
+      const userId = id.replace('call_', '');
       if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
       
       await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0x808080)], components: interaction.message.components });
@@ -1143,11 +1098,11 @@ client.on('interactionCreate', async interaction => {
     }
     
     if (id.startsWith('deny_')) {
-      const [_, userId, stack] = id.split('_');
+      const userId = id.replace('deny_', '');
       if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
       
       const modal = new ModalBuilder()
-        .setCustomId(`deny_reason_${userId}_${stack}_${interaction.channel.id}`)
+        .setCustomId(`deny_reason_${userId}_${interaction.channel.id}`)
         .setTitle('❌ Причина отклонения');
       
       const reasonInput = new TextInputBuilder()
@@ -1164,7 +1119,7 @@ client.on('interactionCreate', async interaction => {
   }
   
   if (interaction.isModalSubmit() && interaction.customId.startsWith('deny_reason_')) {
-    const [_, userId, stack, channelId] = interaction.customId.split('_');
+    const [_, userId, channelId] = interaction.customId.split('_');
     const reason = interaction.fields.getTextInputValue('reason');
     
     if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
@@ -1174,10 +1129,10 @@ client.on('interactionCreate', async interaction => {
     try {
       const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
       
-      if (stack === 'stack1') { stats.stack1.denied++; stats.stack1.weekDenied++; } 
-      else { stats.stack2.denied++; stats.stack2.weekDenied++; }
+      stats.denied++;
+      stats.weekDenied++;
       
-      const ticketId = `${userId}_${stack}`;
+      const ticketId = userId;
       clearTimeout(autoDeleteTimeouts.get(ticketId));
       activeTickets.delete(ticketId);
       
@@ -1190,7 +1145,7 @@ client.on('interactionCreate', async interaction => {
         const targetUser = await client.users.fetch(userId);
         await targetUser.send({
           embeds: [new EmbedBuilder()
-            .setTitle(`❌ ЗАЯВКА ОТКЛОНЕНА | ${stack === 'stack1' ? 'СТАК 1' : 'СТАК 2'}`)
+            .setTitle('❌ ЗАЯВКА ОТКЛОНЕНА | RUNE')
             .setColor(0xFF0000)
             .setDescription(`**Причина:** ${reason}\n\nВы можете подать заявку повторно позже.`)
           ]
@@ -1225,10 +1180,10 @@ http.createServer((req, res) => {
   res.end(`
     <!DOCTYPE html>
     <html>
-    <head><title>Winter Team Bot</title></head>
+    <head><title>RUNE Bot</title></head>
     <body style="font-family: Arial; text-align: center; padding: 50px;">
-      <h1>✅ Winter Team Bot работает!</h1>
-      <p>🌍 Глобальный бэкап: ${backup ? `${backup.sourceGuildName} (${backup.totalChannels} каналов)` : 'не создан'}</p>
+      <h1>✅ RUNE Bot работает!</h1>
+      <p>🌍 Бэкап: ${backup ? `${backup.sourceGuildName} (${backup.totalChannels} кан.)` : 'не создан'}</p>
       <p>📋 Серверов: ${client.guilds.cache.size}</p>
       <p>⏰ Аптайм: ${getUptime()}</p>
     </body>
