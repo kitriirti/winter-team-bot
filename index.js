@@ -11,7 +11,9 @@ const {
     TextInputBuilder,
     TextInputStyle,
     PermissionFlagsBits,
-    ChannelType
+    ChannelType,
+    REST,
+    Routes
 } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
@@ -91,19 +93,14 @@ function writeJSON(filename, data) {
 function initDataFiles() {
     ensureDataDir();
     
-    if (!fs.existsSync(path.join(DATA_DIR, 'events.json'))) {
-        writeJSON('events.json', {});
-        console.log('✅ Создан events.json');
-    }
-    
-    if (!fs.existsSync(path.join(DATA_DIR, 'reminders.json'))) {
-        writeJSON('reminders.json', []);
-        console.log('✅ Создан reminders.json');
-    }
-    
-    if (!fs.existsSync(path.join(DATA_DIR, 'afk.json'))) {
-        writeJSON('afk.json', {});
-        console.log('✅ Создан afk.json');
+    const files = ['events.json', 'reminders.json', 'afk.json'];
+    for (const file of files) {
+        const filePath = path.join(DATA_DIR, file);
+        if (!fs.existsSync(filePath)) {
+            const defaultValue = file === 'reminders.json' ? [] : {};
+            writeJSON(file, defaultValue);
+            console.log(`✅ Создан ${file}`);
+        }
     }
 }
 
@@ -135,6 +132,110 @@ function getEnv(key, fallback = '') {
         return process.env[key] || fallback;
     } catch {
         return fallback;
+    }
+}
+
+// ============================================================
+//                    РЕГИСТРАЦИЯ КОМАНД
+// ============================================================
+const commands = [
+    {
+        name: 'setup',
+        description: 'Настройка систем',
+        options: [
+            {
+                type: 1,
+                name: 'apply',
+                description: 'Создать панель заявок',
+            },
+            {
+                type: 1,
+                name: 'tickets',
+                description: 'Создать панель тикетов',
+            },
+        ],
+    },
+    {
+        name: 'ticket',
+        description: 'Управление тикетами',
+        options: [
+            {
+                type: 1,
+                name: 'create',
+                description: 'Создать новый тикет',
+            },
+        ],
+    },
+    {
+        name: 'event',
+        description: 'Управление ивентами',
+        options: [
+            {
+                type: 1,
+                name: 'create',
+                description: 'Создать ивент',
+                options: [
+                    { type: 3, name: 'название', description: 'Название ивента', required: true },
+                    { type: 3, name: 'описание', description: 'Описание', required: true },
+                    { type: 3, name: 'дата', description: 'Дата (ДД.ММ.ГГГГ)', required: true },
+                    { type: 3, name: 'время', description: 'Время МСК (ЧЧ:ММ)', required: true },
+                    { type: 7, name: 'канал', description: 'Канал для публикации', required: false },
+                ],
+            },
+            {
+                type: 1,
+                name: 'end',
+                description: 'Завершить ивент',
+                options: [
+                    { type: 3, name: 'id', description: 'ID ивента', required: true },
+                ],
+            },
+        ],
+    },
+    {
+        name: 'raid',
+        description: 'Объявить рейд',
+        options: [
+            { type: 3, name: 'сообщение', description: 'Дополнительное сообщение', required: false },
+        ],
+    },
+    {
+        name: 'afk',
+        description: 'Управление отпусками',
+        options: [
+            {
+                type: 1,
+                name: 'setup',
+                description: 'Создать панель отпусков',
+            },
+            {
+                type: 1,
+                name: 'list',
+                description: 'Список отсутствующих',
+            },
+        ],
+    },
+];
+
+async function registerCommands() {
+    try {
+        const token = getEnv('BOT_TOKEN');
+        const clientId = getEnv('CLIENT_ID');
+        
+        if (!token || !clientId) {
+            console.error('❌ BOT_TOKEN или CLIENT_ID не найдены!');
+            return;
+        }
+        
+        const rest = new REST({ version: '10' }).setToken(token);
+        
+        console.log('🔄 Обновление слеш-команд...');
+        await rest.put(Routes.applicationCommands(clientId), { body: commands });
+        console.log('✅ Команды зарегистрированы:');
+        commands.forEach(cmd => console.log(`  /${cmd.name}`));
+        
+    } catch (error) {
+        console.error('❌ Ошибка регистрации команд:', error.message);
     }
 }
 
@@ -953,14 +1054,18 @@ function checkExpiredAfk() {
 // ============================================================
 //                        ГОТОВНОСТЬ
 // ============================================================
-client.once('ready', () => {
+client.once('ready', async () => {
     console.log(`✅ Бот ${client.user.tag} запущен!`);
     console.log(`📊 Серверов: ${client.guilds.cache.size}`);
-    console.log(`🟢 Статус: Онлайн`);
-
+    
+    // Авто-регистрация команд
+    await registerCommands();
+    
     // Таймеры
     setInterval(checkEventReminders, 30000);
     setInterval(checkExpiredAfk, 60000);
+    
+    console.log('🟢 Бот готов к работе!');
 });
 
 // ============================================================
@@ -1102,6 +1207,14 @@ client.on('interactionCreate', async interaction => {
 
                 if (sub === 'list') {
                     await showAfkList(interaction);
+                }
+                return;
+            }
+
+            if (cmd === 'ticket') {
+                const sub = interaction.options.getSubcommand();
+                if (sub === 'create') {
+                    await createTicket(interaction);
                 }
                 return;
             }
