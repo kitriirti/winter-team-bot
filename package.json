@@ -1,11 +1,13 @@
 {
   "name": "winter-team-bot",
   "version": "4.0.0",
+  "description": "Бот для клана RUNA в Rust",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "discord.js": "^14.14.1"
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.3.1"
   }
 }
