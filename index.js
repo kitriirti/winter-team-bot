@@ -1,1194 +1,1216 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ChannelType, Collection } = require('discord.js');
-const http = require('http');
+require('dotenv').config();
+const { 
+    Client, 
+    GatewayIntentBits, 
+    Partials, 
+    Collection,
+    EmbedBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle,
+    PermissionFlagsBits,
+    ChannelType
+} = require('discord.js');
+const fs = require('fs');
+const path = require('path');
 
-// ========== НАСТРОЙКИ КЛИЕНТА ==========
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildBans,
-    GatewayIntentBits.GuildInvites
-  ]
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildPresences,
+    ],
+    partials: [Partials.Channel],
 });
 
-// ========== ХРАНИЛИЩА В ПАМЯТИ ==========
-const globalBackup = new Collection();
-const deletedChannels = new Collection();
-const activeTickets = new Collection();
-const autoDeleteTimeouts = new Collection();
-const timedOutUsers = new Collection();
-let staffStats = new Collection();
-const invites = new Collection();
+// ============================================================
+//                        ХРАНИЛИЩА ДАННЫХ
+// ============================================================
+const DATA_DIR = path.join(__dirname, 'data');
 
-// ========== ПЕРЕМЕННЫЕ СОСТОЯНИЯ ==========
-let ticketOpen = true;
-let stats = {
-  accepted: 0, denied: 0, autoDenied: 0,
-  weekAccepted: 0, weekDenied: 0, weekStart: Date.now()
-};
-
-const startTime = Date.now();
-
-// ========== ПРОВЕРКА НЕДЕЛЬНОЙ СТАТИСТИКИ ==========
-const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-if (stats.weekStart < weekAgo) {
-  stats.weekAccepted = 0;
-  stats.weekDenied = 0;
-  stats.weekStart = Date.now();
-}
-
-// ========== ПОЛУЧЕНИЕ КОНФИГУРАЦИИ ==========
-const getConfig = () => {
-  return {
-    token: process.env.DISCORD_TOKEN,
-    ticketCategory: process.env.TICKET_CATEGORY,
-    staffRoleId: process.env.STAFF_ROLE_ID,
-    logChannelId: process.env.LOG_CHANNEL_ID,
-    memberRoleId: process.env.MEMBER_ROLE_ID,
-    autoRoleId: process.env.AUTO_ROLE_ID
-  };
-};
-
-// ========== ФУНКЦИИ АПТАЙМА ==========
-function getUptime() {
-  const diff = Date.now() - startTime;
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-  const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-  const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-  const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-  
-  let result = '';
-  if (days > 0) result += `${days} д. `;
-  if (hours > 0) result += `${hours} ч. `;
-  if (minutes > 0) result += `${minutes} мин. `;
-  result += `${seconds} сек.`;
-  return result;
-}
-
-function getUptimeShort() {
-  const diff = Date.now() - startTime;
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-  const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-  const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-  
-  let result = '';
-  if (days > 0) result += `${days}д `;
-  if (hours > 0) result += `${hours}ч `;
-  result += `${minutes}м`;
-  return result || '0м';
-}
-
-function getWorkingHoursMessage() {
-  const now = new Date();
-  const mskHour = (now.getUTCHours() + 3) % 24;
-  if (mskHour >= 10 && mskHour < 21) return '';
-  return `\n**━━━━━━━━━━━━━━━━━━━━━━━━━━**\n⏰ *Заявки рассматриваются с 10:00 до 21:00 по МСК.*`;
-}
-
-async function sendLog(guild, embed) {
-  try {
-    const cfg = getConfig();
-    if (!cfg.logChannelId) return;
-    const channel = await guild.channels.fetch(cfg.logChannelId).catch(() => null);
-    if (!channel) return;
-    await channel.send({ embeds: [embed] });
-  } catch (error) {}
-}
-
-// ========== ОБНОВЛЕНИЕ РОЛИ СТАФФА ==========
-async function updateStaffRole(guild, staffId, acceptedCount) {
-  try {
-    const member = await guild.members.fetch(staffId).catch(() => null);
-    if (!member) return;
-    
-    const roleName = `📋 Принял ${acceptedCount} заявок`;
-    
-    const oldRoles = member.roles.cache.filter(r => r.name.startsWith('📋 Принял '));
-    for (const role of oldRoles.values()) {
-      await member.roles.remove(role).catch(() => {});
-      if (role.members.size === 1) {
-        await role.delete().catch(() => {});
-      }
+function ensureDataDir() {
+    if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    
-    let newRole = guild.roles.cache.find(r => r.name === roleName);
-    if (!newRole) {
-      newRole = await guild.roles.create({
-        name: roleName,
-        color: 0x3498DB,
-        reason: `Статистика принятых заявок для ${member.user.tag}`
-      });
-    }
-    
-    await member.roles.add(newRole);
-    console.log(`✅ Роль "${roleName}" выдана ${member.user.tag}`);
-  } catch (error) {
-    console.error(`❌ Ошибка обновления роли:`, error);
-  }
 }
 
-// ========== СИСТЕМА ТИКЕТОВ ==========
-function scheduleInactiveDelete(channelId, ticketId) {
-  const timeout = setTimeout(async () => {
+function readJSON(filename) {
+    ensureDataDir();
+    const filePath = path.join(DATA_DIR, filename);
     try {
-      const channel = await client.channels.fetch(channelId).catch(() => null);
-      if (channel) {
-        const messages = await channel.messages.fetch({ limit: 5 });
-        const botMessages = messages.filter(m => m.author.id === client.user.id);
-        
-        if (messages.size <= 1 || (messages.size === 2 && botMessages.size >= 1)) {
-          await channel.send('🗑️ **Тикет автоматически закрыт (неактивность 48 часов).**');
-          setTimeout(async () => {
-            try { await channel.delete(); } catch (error) {}
-          }, 5000);
+        if (fs.existsSync(filePath)) {
+            return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
         }
-      }
-      activeTickets.delete(ticketId);
-      autoDeleteTimeouts.delete(ticketId);
-    } catch (error) {}
-  }, 48 * 60 * 60 * 1000);
-  
-  autoDeleteTimeouts.set(ticketId, timeout);
+    } catch (e) {
+        console.error(`Ошибка чтения ${filename}:`, e);
+    }
+    return {};
 }
 
-async function createTicketMessage(channel) {
-  const embed = new EmbedBuilder()
-    .setTitle('📋 ПОДАТЬ ЗАЯВКУ В RUNE')
-    .setDescription(
-      `**ТРЕБОВАНИЯ:**\n\n` +
-      `● 3000+ часов на аккаунте\n● 15+ лет\n● Иметь хороший микрофон\n` +
-      `● Умение слушать коллы и адекватно реагировать на критику\n● Минимум 6 часов стабильного онлайна в день\n\n` +
-      `**Статус набора:** ${ticketOpen ? '🟢 Открыт' : '🔴 Закрыт'}\n\nНажмите кнопку ниже, чтобы заполнить анкету.`
-    )
-    .setColor(0x3498DB)
-    .setTimestamp();
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('create_ticket').setLabel('📝 Подать заявку').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('toggle_ticket').setEmoji(ticketOpen ? '🟢' : '🔴').setStyle(ButtonStyle.Secondary)
-  );
-
-  return await channel.send({ embeds: [embed], components: [row] });
+function writeJSON(filename, data) {
+    ensureDataDir();
+    const filePath = path.join(DATA_DIR, filename);
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
-function isTicketChannel(channel) {
-  if (channel.name.startsWith('📋｜')) return true;
-  return false;
+// ============================================================
+//                        СИСТЕМА ЛОГОВ
+// ============================================================
+async function sendLog(guildId, type, data) {
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) return;
+
+    const logChannelId = process.env.LOG_CHANNEL_ID;
+    if (!logChannelId) return;
+
+    const logChannel = guild.channels.cache.get(logChannelId);
+    if (!logChannel) return;
+
+    let embed;
+
+    switch (type) {
+        case 'apply':
+            embed = new EmbedBuilder()
+                .setTitle('📋 Новая заявка')
+                .setColor(0xFFA500)
+                .addFields(
+                    { name: '👤 Пользователь', value: `<@${data.userId}> (${data.userTag})`, inline: true },
+                    { name: '🆔 ID', value: data.userId, inline: true },
+                    { name: '⏱️ Часы', value: `${data.hours}`, inline: true },
+                    { name: '🎂 Возраст', value: `${data.age}`, inline: true },
+                    { name: '🕐 Онлайн в день', value: data.dailyHours, inline: true },
+                    { name: '🎯 Роль', value: data.role, inline: true },
+                    { name: '👂 Слушает коллы', value: `${data.listenSkill}/10`, inline: true },
+                )
+                .setTimestamp();
+            break;
+
+        case 'member_join':
+            embed = new EmbedBuilder()
+                .setTitle('✅ Новый участник')
+                .setColor(0x57F287)
+                .setDescription(`<@${data.userId}> присоединился к серверу!`)
+                .addFields(
+                    { name: '👤 Имя', value: data.userTag, inline: true },
+                    { name: '🆔 ID', value: data.userId, inline: true },
+                    { name: '📅 Аккаунт создан', value: `<t:${Math.floor(data.createdAt / 1000)}:R>`, inline: true },
+                )
+                .setTimestamp();
+            break;
+
+        case 'ticket_created':
+            embed = new EmbedBuilder()
+                .setTitle('🎫 Тикет создан')
+                .setColor(0x3498DB)
+                .addFields(
+                    { name: '👤 Кем', value: `<@${data.userId}> (${data.userTag})`, inline: true },
+                    { name: '📝 Канал', value: `<#${data.channelId}>`, inline: true },
+                )
+                .setTimestamp();
+            break;
+
+        case 'ticket_closed':
+            embed = new EmbedBuilder()
+                .setTitle('🔒 Тикет закрыт')
+                .setColor(0xED4245)
+                .addFields(
+                    { name: '👤 Кем', value: `<@${data.userId}> (${data.userTag})`, inline: true },
+                    { name: '👮 Закрыл', value: `<@${data.staffId}> (${data.staffTag})`, inline: true },
+                    { name: '📝 Причина', value: data.reason, inline: false },
+                )
+                .setTimestamp();
+            break;
+
+        case 'call_invite':
+            embed = new EmbedBuilder()
+                .setTitle('📞 Вызов на обзвон')
+                .setColor(0x9B59B6)
+                .addFields(
+                    { name: '👤 Кого', value: `<@${data.userId}> (${data.userTag})`, inline: true },
+                    { name: '👮 Кто вызвал', value: `<@${data.staffId}> (${data.staffTag})`, inline: true },
+                    { name: '📝 Канал', value: `<#${data.channelId}>`, inline: true },
+                )
+                .setTimestamp();
+            break;
+
+        case 'ticket_review':
+            embed = new EmbedBuilder()
+                .setTitle('⏳ Тикет на рассмотрении')
+                .setColor(0xF1C40F)
+                .addFields(
+                    { name: '👤 Кем', value: `<@${data.userId}> (${data.userTag})`, inline: true },
+                    { name: '👮 Кто рассматривает', value: `<@${data.staffId}> (${data.staffTag})`, inline: true },
+                )
+                .setTimestamp();
+            break;
+
+        case 'ticket_deleted':
+            embed = new EmbedBuilder()
+                .setTitle('🗑️ Тикет удалён')
+                .setColor(0x95A5A6)
+                .addFields(
+                    { name: '👤 Кем был', value: `<@${data.userId}> (${data.userTag})`, inline: true },
+                    { name: '👮 Удалил', value: `<@${data.staffId}> (${data.staffTag})`, inline: true },
+                )
+                .setTimestamp();
+            break;
+
+        case 'event_created':
+            embed = new EmbedBuilder()
+                .setTitle('📅 Ивент создан')
+                .setColor(0x5865F2)
+                .addFields(
+                    { name: '📋 Название', value: data.title, inline: true },
+                    { name: '👮 Создал', value: `<@${data.staffId}> (${data.staffTag})`, inline: true },
+                    { name: '📆 Дата', value: data.date, inline: true },
+                    { name: '🕐 Время', value: `${data.time} МСК`, inline: true },
+                )
+                .setTimestamp();
+            break;
+
+        case 'afk_vacation':
+            embed = new EmbedBuilder()
+                .setTitle('📅 ОТПУСК')
+                .setColor(0xE67E22)
+                .addFields(
+                    { name: '👤 Пользователь', value: `<@${data.userId}> (${data.userTag})`, inline: true },
+                    { name: '📅 Дней', value: `${data.days}`, inline: true },
+                    { name: '📝 Причина', value: data.reason, inline: false },
+                    { name: '🔄 Возвращение', value: `<t:${Math.floor(data.returnTime / 1000)}:F>`, inline: false },
+                )
+                .setTimestamp();
+            break;
+
+        case 'afk_away':
+            embed = new EmbedBuilder()
+                .setTitle('⏰ ОТОШЁЛ')
+                .setColor(0x3498DB)
+                .addFields(
+                    { name: '👤 Пользователь', value: `<@${data.userId}> (${data.userTag})`, inline: true },
+                    { name: '⏰ Время', value: data.timeStr, inline: true },
+                    { name: '📝 Причина', value: data.reason, inline: false },
+                    { name: '🔄 Вернётся', value: `<t:${Math.floor(data.returnTime / 1000)}:F>`, inline: false },
+                )
+                .setTimestamp();
+            break;
+
+        case 'afk_return':
+            embed = new EmbedBuilder()
+                .setTitle('🔄 ВОЗВРАЩЕНИЕ')
+                .setColor(0x2ECC71)
+                .addFields(
+                    { name: '👤 Пользователь', value: `<@${data.userId}> (${data.userTag})`, inline: true },
+                    { name: '⏱️ Отсутствовал', value: data.timeAway, inline: true },
+                )
+                .setTimestamp();
+            break;
+    }
+
+    if (embed) {
+        await logChannel.send({ embeds: [embed] }).catch(() => {});
+    }
 }
 
-// ========== СОХРАНЕНИЕ В ГЛОБАЛЬНЫЙ БЭКАП ==========
-async function saveToGlobalBackup(guild) {
-  try {
-    const categories = [];
-    const standaloneChannels = [];
-    
-    for (const channel of guild.channels.cache.values()) {
-      if (isTicketChannel(channel)) continue;
-      
-      if (channel.type === ChannelType.GuildCategory) {
-        categories.push({
-          name: channel.name,
-          type: 'category',
-          position: channel.position,
-          channels: []
-        });
-      }
-    }
-    
-    for (const channel of guild.channels.cache.values()) {
-      if (isTicketChannel(channel)) continue;
-      
-      if (channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildVoice) {
-        const channelData = {
-          name: channel.name,
-          type: channel.type === ChannelType.GuildText ? 'text' : 'voice',
-          parentName: channel.parent?.name || null,
-          position: channel.position,
-          topic: channel.topic || null,
-          nsfw: channel.nsfw || false,
-          rateLimitPerUser: channel.rateLimitPerUser || 0,
-          bitrate: channel.bitrate || null,
-          userLimit: channel.userLimit || null
-        };
-        
-        if (channel.parent) {
-          const category = categories.find(c => c.name === channel.parent.name);
-          if (category) category.channels.push(channelData);
-        } else {
-          standaloneChannels.push(channelData);
-        }
-      }
-    }
-    
-    const backupData = {
-      sourceGuildId: guild.id,
-      sourceGuildName: guild.name,
-      savedAt: new Date().toISOString(),
-      categories: categories,
-      standaloneChannels: standaloneChannels,
-      totalChannels: categories.reduce((acc, cat) => acc + cat.channels.length, 0) + standaloneChannels.length
-    };
-    
-    globalBackup.set('last_backup', backupData);
-    console.log(`🌍 Глобальный бэкап сохранён: ${backupData.totalChannels} каналов`);
-    
-    return backupData;
-  } catch (error) {
-    console.error('❌ Ошибка сохранения:', error);
-    return null;
-  }
-}
+// ============================================================
+//                        СИСТЕМА ТИКЕТОВ
+// ============================================================
+const ticketData = {};
 
-// ========== ВОССТАНОВЛЕНИЕ ИЗ ГЛОБАЛЬНОГО БЭКАПА ==========
-async function restoreFromGlobalBackup(guild) {
-  try {
-    const backupData = globalBackup.get('last_backup');
-    
-    if (!backupData) {
-      return { success: false, error: '❌ Глобальный бэкап не создан! Сначала используйте /save_backup на сервере-источнике.' };
-    }
-    
-    let createdCategories = 0;
-    let createdChannels = 0;
-    const categoryMap = new Map();
-    
-    for (const cat of backupData.categories) {
-      try {
-        const existing = guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && c.name === cat.name);
-        if (!existing) {
-          const newCategory = await guild.channels.create({
-            name: cat.name,
-            type: ChannelType.GuildCategory,
-            position: cat.position
-          });
-          categoryMap.set(cat.name, newCategory.id);
-          createdCategories++;
-          await new Promise(resolve => setTimeout(resolve, 500));
-        } else {
-          categoryMap.set(cat.name, existing.id);
-        }
-      } catch (e) {}
-    }
-    
-    for (const cat of backupData.categories) {
-      for (const ch of cat.channels) {
-        try {
-          const parentId = categoryMap.get(ch.parentName);
-          const existing = guild.channels.cache.find(c => c.name === ch.name && c.parentId === parentId);
-          if (!existing) {
-            if (ch.type === 'text') {
-              await guild.channels.create({
-                name: ch.name, type: ChannelType.GuildText, parent: parentId,
-                position: ch.position, topic: ch.topic || undefined,
-                nsfw: ch.nsfw || false, rateLimitPerUser: ch.rateLimitPerUser || 0
-              });
-            } else if (ch.type === 'voice') {
-              await guild.channels.create({
-                name: ch.name, type: ChannelType.GuildVoice, parent: parentId,
-                position: ch.position, bitrate: ch.bitrate || 64000, userLimit: ch.userLimit || 0
-              });
-            }
-            createdChannels++;
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-        } catch (e) {}
-      }
-    }
-    
-    for (const ch of backupData.standaloneChannels) {
-      try {
-        const existing = guild.channels.cache.find(c => c.name === ch.name && !c.parentId);
-        if (!existing) {
-          if (ch.type === 'text') {
-            await guild.channels.create({
-              name: ch.name, type: ChannelType.GuildText, position: ch.position,
-              topic: ch.topic || undefined, nsfw: ch.nsfw || false, rateLimitPerUser: ch.rateLimitPerUser || 0
-            });
-          } else if (ch.type === 'voice') {
-            await guild.channels.create({
-              name: ch.name, type: ChannelType.GuildVoice, position: ch.position,
-              bitrate: ch.bitrate || 64000, userLimit: ch.userLimit || 0
-            });
-          }
-          createdChannels++;
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-      } catch (e) {}
-    }
-    
-    return { 
-      success: true, 
-      categories: createdCategories, 
-      channels: createdChannels,
-      sourceGuildName: backupData.sourceGuildName,
-      savedAt: backupData.savedAt
-    };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-}
+async function createTicket(interaction) {
+    const guild = interaction.guild;
+    const categoryId = process.env.TICKET_CATEGORY_ID;
+    const staffRoleId = process.env.TICKET_STAFF_ROLE_ID;
 
-// ========== ВОССТАНОВЛЕНИЕ ОДНОГО КАНАЛА ==========
-async function restoreChannel(guild, channelData) {
-  try {
-    let parentId = null;
-    if (channelData.parentName) {
-      const parent = guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && c.name === channelData.parentName);
-      if (parent) parentId = parent.id;
+    if (!categoryId || !staffRoleId) {
+        return interaction.reply({ content: '❌ Система тикетов не настроена!', ephemeral: true });
     }
-    
-    if (channelData.type === 'text') {
-      return await guild.channels.create({
-        name: channelData.name, type: ChannelType.GuildText, parent: parentId,
-        position: channelData.position, topic: channelData.topic || undefined,
-        nsfw: channelData.nsfw || false, rateLimitPerUser: channelData.rateLimitPerUser || 0
-      });
-    } else if (channelData.type === 'voice') {
-      return await guild.channels.create({
-        name: channelData.name, type: ChannelType.GuildVoice, parent: parentId,
-        position: channelData.position, bitrate: channelData.bitrate || 64000,
-        userLimit: channelData.userLimit || 0
-      });
-    } else if (channelData.type === 'category') {
-      return await guild.channels.create({
-        name: channelData.name, type: ChannelType.GuildCategory, position: channelData.position
-      });
-    }
-  } catch (error) {
-    console.error(`❌ Ошибка восстановления ${channelData.name}:`, error);
-    return null;
-  }
-}
 
-// ========== АНТИ-СНОС ==========
-client.on('channelDelete', async (channel) => {
-  try {
-    if (channel.type === ChannelType.DM || !channel.guild) return;
-    
-    const guild = channel.guild;
-    
-    if (isTicketChannel(channel)) {
-      console.log(`🎫 Тикет-канал "${channel.name}" удалён — игнорируем`);
-      
-      for (const [ticketId, ticket] of activeTickets) {
-        if (ticket.channelId === channel.id) {
-          clearTimeout(autoDeleteTimeouts.get(ticketId));
-          activeTickets.delete(ticketId);
-          autoDeleteTimeouts.delete(ticketId);
-          break;
-        }
-      }
-      return;
-    }
-    
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
-    const auditLogs = await guild.fetchAuditLogs({ type: 12, limit: 10 });
-    const deleteLog = auditLogs.entries.find(entry => 
-      entry.target.id === channel.id && 
-      Date.now() - entry.createdTimestamp < 10000
+    const existingChannel = guild.channels.cache.find(
+        c => c.name === `ticket-${interaction.user.username.toLowerCase()}` && 
+        c.parentId === categoryId
     );
-    
-    const executor = deleteLog?.executor;
-    
-    console.log(`🗑️ Канал "${channel.name}" удалён!`);
-    if (executor) console.log(`👤 Удалил: ${executor.tag}`);
-    
-    const channelData = {
-      name: channel.name,
-      type: channel.type === ChannelType.GuildText ? 'text' : 
-            (channel.type === ChannelType.GuildVoice ? 'voice' : 'category'),
-      parentName: channel.parent?.name || null,
-      position: channel.position,
-      topic: channel.topic || null,
-      nsfw: channel.nsfw || false,
-      rateLimitPerUser: channel.rateLimitPerUser || 0,
-      bitrate: channel.bitrate || null,
-      userLimit: channel.userLimit || null,
-      deletedAt: new Date()
-    };
-    
-    deletedChannels.set(channel.id, channelData);
-    
-    if (deletedChannels.size > 50) {
-      const firstKey = deletedChannels.keys().next().value;
-      deletedChannels.delete(firstKey);
-    }
-    
-    if (executor && 
-        executor.id !== guild.ownerId && 
-        !executor.permissions.has(PermissionFlagsBits.Administrator) &&
-        !executor.bot) {
-      
-      try {
-        await executor.timeout(24 * 60 * 60 * 1000, 'Анти-снос: удаление канала без прав администратора');
-        console.log(`✅ ${executor.tag} получил таймаут на 24 часа`);
-        
-        timedOutUsers.set(executor.id, {
-          userId: executor.id,
-          userTag: executor.tag,
-          guildId: guild.id,
-          timeoutEnd: Date.now() + 24 * 60 * 60 * 1000
-        });
-        
-        const admins = guild.members.cache.filter(m => 
-          m.permissions.has(PermissionFlagsBits.Administrator) && !m.user.bot
-        );
-        
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId(`remove_timeout_${executor.id}`)
-            .setLabel('🔓 Снять таймаут')
-            .setStyle(ButtonStyle.Success),
-          new ButtonBuilder()
-            .setCustomId(`restore_deleted_${channel.id}`)
-            .setLabel('🔄 Восстановить канал')
-            .setStyle(ButtonStyle.Primary)
-        );
-        
-        const alertEmbed = new EmbedBuilder()
-          .setTitle('🚨 АНТИ-СНОС: КАНАЛ УДАЛЁН!')
-          .setColor(0xFF0000)
-          .setDescription(
-            `**Нарушитель:** ${executor.tag} (${executor.id})\n` +
-            `**Удалённый канал:** ${channelData.name}\n` +
-            `**Тип:** ${channelData.type}\n\n` +
-            `**Наказание:** Таймаут 24 часа\n\n` +
-            `Нажмите кнопку ниже чтобы снять таймаут или восстановить канал.`
-          )
-          .setTimestamp();
-        
-        for (const admin of admins.values()) {
-          try {
-            await admin.send({ embeds: [alertEmbed], components: [row] });
-          } catch (e) {}
-        }
-        
-        const cfg = getConfig();
-        if (cfg.logChannelId) {
-          const logChannel = await guild.channels.fetch(cfg.logChannelId).catch(() => null);
-          if (logChannel) {
-            const logEmbed = new EmbedBuilder()
-              .setTitle('🚨 АНТИ-СНОС: ТАЙМАУТ ВЫДАН')
-              .setColor(0xFF0000)
-              .addFields(
-                { name: '👤 Нарушитель', value: executor.tag, inline: true },
-                { name: '🗑️ Канал', value: channelData.name, inline: true },
-                { name: '⏰ Наказание', value: '24 часа', inline: true }
-              )
-              .setTimestamp();
-            
-            await logChannel.send({ embeds: [logEmbed] });
-          }
-        }
-      } catch (error) {
-        console.error(`❌ Ошибка выдачи таймаута:`, error);
-      }
-    }
-    
-  } catch (error) {
-    console.error('❌ Ошибка в channelDelete:', error);
-  }
-});
 
-// ========== ПРИВЕТСТВИЕ (ТОЛЬКО ВЫДАЧА РОЛИ) ==========
-client.on('guildMemberAdd', async (member) => {
-  try {
-    const cfg = getConfig();
-    if (cfg.autoRoleId) {
-      await member.roles.add(cfg.autoRoleId).catch(() => {});
-      console.log(`✅ Роль выдана участнику ${member.user.tag}`);
+    if (existingChannel) {
+        return interaction.reply({ content: '❌ У тебя уже есть открытый тикет!', ephemeral: true });
     }
-    
-    try {
-      const newInvites = await member.guild.invites.fetch();
-      invites.set(member.guild.id, newInvites);
-    } catch (error) {}
-    
-  } catch (error) {
-    console.error('❌ Ошибка в guildMemberAdd:', error);
-  }
-});
 
-// ========== ОТСЛЕЖИВАНИЕ ПРИГЛАШЕНИЙ ==========
-client.on('inviteCreate', async (invite) => {
-  const guildInvites = invites.get(invite.guild.id) || new Collection();
-  guildInvites.set(invite.code, invite);
-  invites.set(invite.guild.id, guildInvites);
-});
-
-client.on('inviteDelete', async (invite) => {
-  const guildInvites = invites.get(invite.guild.id);
-  if (guildInvites) {
-    guildInvites.delete(invite.code);
-    invites.set(invite.guild.id, guildInvites);
-  }
-});
-
-// ========== ЗАПУСК БОТА ==========
-client.once('ready', async () => {
-  console.log(`✅ Бот ${client.user.tag} запущен!`);
-  console.log(`🌍 ГЛОБАЛЬНЫЙ БЭКАП АКТИВЕН`);
-  
-  setInterval(() => {
-    client.user.setActivity(`RUNE | ${getUptimeShort()}`, { type: 3 });
-  }, 60000);
-  
-  client.user.setActivity(`RUNE | ${getUptimeShort()}`, { type: 3 });
-  
-  client.guilds.cache.forEach(async (guild) => {
-    try {
-      const guildInvites = await guild.invites.fetch();
-      invites.set(guild.id, new Collection(guildInvites.map(invite => [invite.code, invite])));
-    } catch (error) {}
-  });
-  
-  try {
-    await client.application.commands.set([
-      { name: 'ticket', description: 'Создать сообщение для подачи заявок' },
-      { name: 'stats', description: 'Показать статистику заявок за неделю (только для стаффа)' },
-      { name: 'ping', description: 'Проверить задержку бота' },
-      { name: 'uptime', description: 'Показать время работы бота' },
-      { name: 'send', description: 'Отправить сообщение от имени бота в канал',
-        options: [
-          { name: 'channel', description: 'Канал для отправки', type: 7, required: true },
-          { name: 'text', description: 'Текст сообщения', type: 3, required: false },
-          { name: 'name', description: 'Имя отправителя', type: 3, required: false },
-          { name: 'avatar', description: 'Ссылка на аватарку', type: 3, required: false }
-        ]
-      },
-      { name: 'unbanall', description: 'Разбанить всех забаненных участников (только для админа)' },
-      { name: 'invites', description: 'Показать топ пригласивших' },
-      { name: 'save_backup', description: '💾 Сохранить структуру каналов в ГЛОБАЛЬНЫЙ бэкап (админ)' },
-      { name: 'restore_backup', description: '📥 Восстановить каналы из ГЛОБАЛЬНОГО бэкапа (админ)' },
-      { name: 'backup_info', description: 'ℹ️ Показать информацию о глобальном бэкапе (админ)' },
-      { name: 'deleted_list', description: 'Показать список недавно удалённых каналов (админ)' }
-    ]);
-    
-    console.log('✅ Команды зарегистрированы!');
-  } catch (error) {
-    console.error('❌ Ошибка регистрации команд:', error);
-  }
-});
-
-// ========== ОБРАБОТКА ВЗАИМОДЕЙСТВИЙ ==========
-client.on('interactionCreate', async interaction => {
-  const cfg = getConfig();
-  const hasStaff = (cfg.staffRoleId && interaction.member?.roles?.cache?.has(cfg.staffRoleId)) ||
-                   interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
-  const isAdmin = interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
-  
-  // ========== /save_backup ==========
-  if (interaction.isCommand() && interaction.commandName === 'save_backup') {
-    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
-    
-    await interaction.deferReply({ ephemeral: true });
-    
-    try {
-      const backupData = await saveToGlobalBackup(interaction.guild);
-      
-      if (backupData) {
-        const embed = new EmbedBuilder()
-          .setTitle('🌍 ГЛОБАЛЬНЫЙ БЭКАП СОХРАНЁН')
-          .setColor(0x00FF00)
-          .setDescription(
-            `**Сервер-источник:** ${backupData.sourceGuildName}\n` +
-            `**Категорий:** ${backupData.categories.length}\n` +
-            `**Каналов:** ${backupData.totalChannels}\n` +
-            `**Сохранено:** ${new Date(backupData.savedAt).toLocaleString('ru-RU')}\n\n` +
-            `✅ **Теперь на ЛЮБОМ сервере используйте:**\n` +
-            `\`/restore_backup\` — чтобы создать эти каналы!`
-          )
-          .setTimestamp();
-        
-        await interaction.editReply({ embeds: [embed] });
-      } else {
-        await interaction.editReply({ content: '❌ Ошибка сохранения бэкапа!' });
-      }
-    } catch (error) {
-      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
-    }
-  }
-  
-  // ========== /restore_backup ==========
-  if (interaction.isCommand() && interaction.commandName === 'restore_backup') {
-    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
-    
-    const backupData = globalBackup.get('last_backup');
-    
-    if (!backupData) {
-      return interaction.reply({ 
-        content: '❌ Глобальный бэкап не создан!\n\nСначала на сервере-источнике используйте `/save_backup`', 
-        ephemeral: true 
-      });
-    }
-    
-    await interaction.deferReply({ ephemeral: true });
-    
-    try {
-      const result = await restoreFromGlobalBackup(interaction.guild);
-      
-      if (result.success) {
-        const embed = new EmbedBuilder()
-          .setTitle('✅ КАНАЛЫ ВОССТАНОВЛЕНЫ ИЗ ГЛОБАЛЬНОГО БЭКАПА')
-          .setColor(0x00FF00)
-          .setDescription(
-            `**Сервер-источник:** ${result.sourceGuildName}\n` +
-            `**Бэкап от:** ${new Date(result.savedAt).toLocaleString('ru-RU')}\n\n` +
-            `**Категорий создано:** ${result.categories}\n` +
-            `**Каналов создано:** ${result.channels}\n\n` +
-            `⚠️ Существующие каналы пропущены.`
-          )
-          .setTimestamp();
-        
-        await interaction.editReply({ embeds: [embed] });
-      } else {
-        await interaction.editReply({ content: result.error });
-      }
-    } catch (error) {
-      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
-    }
-  }
-  
-  // ========== /backup_info ==========
-  if (interaction.isCommand() && interaction.commandName === 'backup_info') {
-    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
-    
-    const backupData = globalBackup.get('last_backup');
-    
-    if (!backupData) {
-      return interaction.reply({ 
-        content: '❌ Глобальный бэкап не создан!', 
-        ephemeral: true 
-      });
-    }
-    
-    const embed = new EmbedBuilder()
-      .setTitle('🌍 ИНФОРМАЦИЯ О ГЛОБАЛЬНОМ БЭКАПЕ')
-      .setColor(0x3498DB)
-      .setDescription(
-        `**Сервер-источник:** ${backupData.sourceGuildName}\n` +
-        `**Сохранён:** ${new Date(backupData.savedAt).toLocaleString('ru-RU')}\n` +
-        `**Категорий:** ${backupData.categories.length}\n` +
-        `**Каналов всего:** ${backupData.totalChannels}`
-      )
-      .setTimestamp();
-    
-    await interaction.reply({ embeds: [embed], ephemeral: true });
-  }
-  
-  // ========== КНОПКА ВОССТАНОВЛЕНИЯ УДАЛЁННОГО КАНАЛА ==========
-  if (interaction.isButton() && interaction.customId.startsWith('restore_deleted_')) {
-    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
-    
-    const channelId = interaction.customId.replace('restore_deleted_', '');
-    const channelData = deletedChannels.get(channelId);
-    
-    if (!channelData) {
-      return interaction.reply({ content: '❌ Данные канала не найдены!', ephemeral: true });
-    }
-    
-    await interaction.deferReply({ ephemeral: true });
-    
-    try {
-      const restored = await restoreChannel(interaction.guild, channelData);
-      
-      if (restored) {
-        deletedChannels.delete(channelId);
-        
-        const embed = new EmbedBuilder()
-          .setTitle('✅ КАНАЛ ВОССТАНОВЛЕН')
-          .setColor(0x00FF00)
-          .setDescription(`Канал **${channelData.name}** успешно восстановлен!`)
-          .setTimestamp();
-        
-        await interaction.editReply({ embeds: [embed] });
-      } else {
-        await interaction.editReply({ content: '❌ Не удалось восстановить канал!' });
-      }
-    } catch (error) {
-      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
-    }
-  }
-  
-  // ========== /deleted_list ==========
-  if (interaction.isCommand() && interaction.commandName === 'deleted_list') {
-    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
-    
-    if (deletedChannels.size === 0) {
-      return interaction.reply({ content: '📭 Нет удалённых каналов в памяти', ephemeral: true });
-    }
-    
-    const channels = Array.from(deletedChannels.values());
-    const list = channels.slice(0, 20).map((ch, i) => 
-      `**${i + 1}.** ${ch.type === 'text' ? '💬' : ch.type === 'voice' ? '🔊' : '📁'} **${ch.name}**`
-    ).join('\n');
-    
-    const embed = new EmbedBuilder()
-      .setTitle('🗑️ НЕДАВНО УДАЛЁННЫЕ КАНАЛЫ')
-      .setColor(0xFFA500)
-      .setDescription(list || 'Нет данных')
-      .setFooter({ text: `Всего: ${deletedChannels.size} каналов` });
-    
-    await interaction.reply({ embeds: [embed], ephemeral: true });
-  }
-  
-  // ========== КНОПКА СНЯТИЯ ТАЙМАУТА ==========
-  if (interaction.isButton() && interaction.customId.startsWith('remove_timeout_')) {
-    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
-    
-    const targetUserId = interaction.customId.replace('remove_timeout_', '');
-    
-    try {
-      const member = await interaction.guild.members.fetch(targetUserId).catch(() => null);
-      
-      if (!member) return interaction.reply({ content: '❌ Участник не найден!', ephemeral: true });
-      if (!member.communicationDisabledUntil) return interaction.reply({ content: '❌ Нет таймаута!', ephemeral: true });
-      
-      await member.timeout(null, `Снят админом ${interaction.user.tag}`);
-      timedOutUsers.delete(targetUserId);
-      
-      const embed = new EmbedBuilder()
-        .setTitle('✅ ТАЙМАУТ СНЯТ')
-        .setColor(0x00FF00)
-        .setDescription(`Таймаут с **${member.user.tag}** снят.`)
-        .setTimestamp();
-      
-      await interaction.update({ embeds: [embed], components: [] });
-    } catch (error) {
-      await interaction.reply({ content: `❌ Ошибка: ${error.message}`, ephemeral: true });
-    }
-  }
-  
-  // ========== /ping ==========
-  if (interaction.isCommand() && interaction.commandName === 'ping') {
-    const backup = globalBackup.get('last_backup');
-    const sent = await interaction.reply({ content: '🏓 Пинг...', fetchReply: true });
-    await interaction.editReply({ 
-      content: `🏓 Понг! **${sent.createdTimestamp - interaction.createdTimestamp}ms** | API: **${client.ws.ping}ms**\n` +
-               `🌍 Бэкап: ${backup ? `${backup.sourceGuildName} (${backup.totalChannels} кан.)` : 'не создан'}`
-    });
-  }
-  
-  // ========== /uptime ==========
-  if (interaction.isCommand() && interaction.commandName === 'uptime') {
-    const embed = new EmbedBuilder()
-      .setTitle('⏰ ВРЕМЯ РАБОТЫ БОТА')
-      .setColor(0x3498DB)
-      .setDescription(`**${getUptime()}**`)
-      .addFields({ name: '📅 Запущен', value: `<t:${Math.floor(startTime / 1000)}:F>`, inline: true });
-    
-    await interaction.reply({ embeds: [embed] });
-  }
-  
-  // ========== /invites ==========
-  if (interaction.isCommand() && interaction.commandName === 'invites') {
-    await interaction.deferReply({ ephemeral: true });
-    
-    try {
-      const guildInvites = await interaction.guild.invites.fetch();
-      const inviterStats = new Collection();
-      
-      for (const invite of guildInvites.values()) {
-        if (invite.inviter) {
-          const stats = inviterStats.get(invite.inviter.id) || { user: invite.inviter, uses: 0 };
-          stats.uses += invite.uses || 0;
-          inviterStats.set(invite.inviter.id, stats);
-        }
-      }
-      
-      const sorted = Array.from(inviterStats.values())
-        .sort((a, b) => b.uses - a.uses)
-        .slice(0, 15);
-      
-      if (sorted.length === 0) return interaction.editReply({ content: '📭 Нет данных' });
-      
-      const list = sorted.map((stat, i) => `**${i + 1}.** ${stat.user} — **${stat.uses}** приглашений`).join('\n');
-      
-      const embed = new EmbedBuilder()
-        .setTitle('📨 ТОП ПРИГЛАСИВШИХ')
-        .setColor(0x9B59B6)
-        .setDescription(list)
-        .setTimestamp();
-      
-      await interaction.editReply({ embeds: [embed] });
-    } catch (error) {
-      await interaction.editReply({ content: '❌ Ошибка!' });
-    }
-  }
-  
-  // ========== /unbanall ==========
-  if (interaction.isCommand() && interaction.commandName === 'unbanall') {
-    if (!isAdmin) return interaction.reply({ content: '❌ Только для админов!', ephemeral: true });
-    
-    await interaction.deferReply({ ephemeral: true });
-    
-    try {
-      const bans = await interaction.guild.bans.fetch();
-      if (bans.size === 0) return interaction.editReply({ content: 'ℹ️ Нет забаненных участников.' });
-      
-      let unbannedCount = 0;
-      for (const ban of bans.values()) {
-        try {
-          await interaction.guild.members.unban(ban.user.id);
-          unbannedCount++;
-        } catch (error) {}
-      }
-      
-      const embed = new EmbedBuilder()
-        .setTitle('🔓 РАЗБАН ВСЕХ')
-        .setColor(0x00FF00)
-        .setDescription(`**Разбанено:** ${unbannedCount}`);
-      
-      await interaction.editReply({ embeds: [embed] });
-    } catch (error) {
-      await interaction.editReply({ content: `❌ Ошибка: ${error.message}` });
-    }
-  }
-  
-  // ========== /stats ==========
-  if (interaction.isCommand() && interaction.commandName === 'stats') {
-    if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
-    
-    const sortedStaff = [...staffStats.entries()]
-      .sort((a, b) => b[1].accepted - a[1].accepted)
-      .slice(0, 10);
-    
-    let staffList = sortedStaff.length > 0 
-      ? sortedStaff.map(([id, data]) => `<@${id}> — **${data.accepted}**`).join('\n')
-      : 'Нет данных';
-    
-    const embed = new EmbedBuilder()
-      .setTitle('📊 СТАТИСТИКА ЗА НЕДЕЛЮ')
-      .setColor(0x3498DB)
-      .addFields(
-        { name: '📋 ЗАЯВКИ', value: `✅ Принято: ${stats.weekAccepted}\n❌ Отклонено: ${stats.weekDenied}\n🤖 Авто-отклонено: ${stats.autoDenied || 0}`, inline: true },
-        { name: '🔧 Статус набора', value: ticketOpen ? '🟢 Открыт' : '🔴 Закрыт', inline: true },
-        { name: '👑 Топ стаффа', value: staffList, inline: false }
-      )
-      .setTimestamp();
-    
-    await interaction.reply({ embeds: [embed], ephemeral: true });
-  }
-  
-  // ========== /ticket ==========
-  if (interaction.isCommand() && interaction.commandName === 'ticket') {
-    if (!isAdmin) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
-    
-    await createTicketMessage(interaction.channel);
-    await interaction.reply({ content: '✅ Сообщение для подачи заявок создано!', ephemeral: true });
-  }
-  
-  // ========== /send ==========
-  if (interaction.isCommand() && interaction.commandName === 'send') {
-    if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
-    
-    const channel = interaction.options.getChannel('channel');
-    const text = interaction.options.getString('text') || '';
-    const customName = interaction.options.getString('name') || 'RUNE';
-    const avatarUrl = interaction.options.getString('avatar') || client.user.displayAvatarURL();
-    
-    if (!channel.isTextBased()) return interaction.reply({ content: '❌ Канал должен быть текстовым!', ephemeral: true });
-    
-    try {
-      const webhook = await channel.createWebhook({ name: customName, avatar: avatarUrl });
-      const embed = new EmbedBuilder().setColor(0x2B2D31).setDescription(text || '​');
-      await webhook.send({ embeds: [embed] });
-      await webhook.delete();
-      
-      await interaction.reply({ content: `✅ Сообщение отправлено!`, ephemeral: true });
-    } catch (error) {
-      await interaction.reply({ content: `❌ Ошибка: ${error.message}`, ephemeral: true });
-    }
-  }
-  
-  // ========== КНОПКА СТАТУСА НАБОРА ==========
-  if (interaction.isButton() && interaction.customId === 'toggle_ticket') {
-    if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
-    
-    ticketOpen = !ticketOpen;
-    
-    const embed = EmbedBuilder.from(interaction.message.embeds[0]).setDescription(
-      interaction.message.embeds[0].description.replace(/Статус набора:.*/, `**Статус набора:** ${ticketOpen ? '🟢 Открыт' : '🔴 Закрыт'}`)
-    );
-    
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('create_ticket').setLabel('📝 Подать заявку').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('toggle_ticket').setEmoji(ticketOpen ? '🟢' : '🔴').setStyle(ButtonStyle.Secondary)
-    );
-    
-    await interaction.update({ embeds: [embed], components: [row] });
-  }
-  
-  // ========== КНОПКА ОТКРЫТИЯ АНКЕТЫ ==========
-  if (interaction.isButton() && interaction.customId === 'create_ticket') {
-    if (!ticketOpen) return interaction.reply({ content: '❌ Набор закрыт!', ephemeral: true });
-    
-    const modal = new ModalBuilder().setCustomId('app_form').setTitle('Заявка в RUNE');
-    
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('Имя').setPlaceholder('Артём').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(50)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('age').setLabel('Возраст (цифры)').setPlaceholder('15').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(3)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('steam').setLabel('Steam ссылка').setPlaceholder('https://steamcommunity.com/...').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('hours').setLabel('Часы (цифры)').setPlaceholder('3000').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(10)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('role').setLabel('Роль').setPlaceholder('Строитель, ПвПшник...').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100))
-    );
-    
-    await interaction.showModal(modal);
-  }
-  
-  // ========== ОБРАБОТКА АНКЕТЫ ==========
-  if (interaction.isModalSubmit() && interaction.customId === 'app_form') {
-    const name = interaction.fields.getTextInputValue('name');
-    const age = parseInt(interaction.fields.getTextInputValue('age'));
-    const steam = interaction.fields.getTextInputValue('steam');
-    const hours = parseInt(interaction.fields.getTextInputValue('hours'));
-    const role = interaction.fields.getTextInputValue('role');
-    
-    if (isNaN(age)) return interaction.reply({ content: '❌ Возраст - только цифры!', ephemeral: true });
-    if (!steam.includes('steamcommunity.com')) return interaction.reply({ content: '❌ Некорректная Steam ссылка!', ephemeral: true });
-    if (isNaN(hours)) return interaction.reply({ content: '❌ Часы - только цифры!', ephemeral: true });
-    
-    if (hours < 3000) {
-      stats.denied++;
-      stats.weekDenied++;
-      stats.autoDenied = (stats.autoDenied || 0) + 1;
-      
-      return interaction.reply({ 
-        embeds: [new EmbedBuilder().setTitle('❌ Отклонено').setDescription(`Часов: ${hours}, нужно: 3000+`).setColor(0xFF0000)], 
-        ephemeral: true 
-      });
-    }
-    
-    await interaction.reply({ content: '⏳ Создаю тикет...', ephemeral: true });
-    
-    try {
-      const staffRole = cfg.staffRoleId;
-      
-      const permissionOverwrites = [
-        { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
-      ];
-      
-      if (staffRole) {
-        permissionOverwrites.push({ id: staffRole, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] });
-      }
-      
-      const channelOptions = {
-        name: `📋｜заявка｜${interaction.user.username}`,
+    const ticketChannel = await guild.channels.create({
+        name: `ticket-${interaction.user.username.toLowerCase()}`,
         type: ChannelType.GuildText,
-        permissionOverwrites: permissionOverwrites
-      };
-      
-      if (cfg.ticketCategory) {
-        try {
-          const category = await interaction.guild.channels.fetch(cfg.ticketCategory).catch(() => null);
-          if (category) channelOptions.parent = cfg.ticketCategory;
-        } catch (error) {}
-      }
-      
-      const channel = await interaction.guild.channels.create(channelOptions);
-      
-      const ticketId = interaction.user.id;
-      activeTickets.set(ticketId, { channelId: channel.id, userId: interaction.user.id, status: 'pending', createdAt: Date.now() });
-      
-      scheduleInactiveDelete(channel.id, ticketId);
-      
-      const embed = new EmbedBuilder()
+        parent: categoryId,
+        permissionOverwrites: [
+            { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+            { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+            { id: staffRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages] },
+        ],
+    });
+
+    ticketData[ticketChannel.id] = {
+        userId: interaction.user.id,
+        staffId: null,
+        status: 'open',
+        createdAt: Date.now(),
+    };
+
+    const ticketEmbed = new EmbedBuilder()
+        .setTitle('🎫 Тикет создан')
+        .setDescription(`**Пользователь:** ${interaction.user}\n**Статус:** 🟡 Ожидает рассмотрения\n\nОпиши свою проблему или вопрос, и стафф скоро ответит.`)
         .setColor(0x3498DB)
-        .setThumbnail(interaction.user.displayAvatarURL())
-        .setDescription(`### <@${interaction.user.id}> подал заявку в RUNE\n━━━━━━━━━━━━━━━━━━\n👤 **Имя:** ${name}\n🎂 **Возраст:** ${age}\n🔗 **Steam:** ${steam}\n⏰ **Часы:** ${hours} ч\n🎯 **Роль:** ${role}${getWorkingHoursMessage()}`);
-      
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`accept_${interaction.user.id}`).setEmoji('✅').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`consider_${interaction.user.id}`).setEmoji('⏳').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`call_${interaction.user.id}`).setEmoji('📞').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`deny_${interaction.user.id}`).setEmoji('❌').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId(`close_${channel.id}`).setEmoji('🔒').setStyle(ButtonStyle.Secondary)
-      );
-      
-      let content = '';
-      if (staffRole) content = `<@&${staffRole}>`;
-      
-      await channel.send({ content, embeds: [embed], components: [row] });
-      await interaction.editReply({ content: `✅ Заявка создана: ${channel}` });
-      
-    } catch (error) {
-      console.error('❌ Ошибка создания тикета:', error);
-      await interaction.editReply('❌ Ошибка создания!');
-    }
-  }
-  
-  // ========== КНОПКИ УПРАВЛЕНИЯ ТИКЕТОМ ==========
-  if (interaction.isButton()) {
-    const id = interaction.customId;
-    
-    if (id.startsWith('close_')) {
-      const channelId = id.split('_')[1];
-      if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
-      
-      await interaction.reply({ content: '🔒 Закрываю...', ephemeral: true });
-      const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
-      
-      for (const [tid, t] of activeTickets) {
-        if (t.channelId === channelId) {
-          clearTimeout(autoDeleteTimeouts.get(tid));
-          activeTickets.delete(tid);
-          break;
-        }
-      }
-      
-      setTimeout(() => channel?.delete().catch(() => {}), 2000);
-    }
-    
-    if (id.startsWith('accept_')) {
-      const userId = id.replace('accept_', '');
-      if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
-      
-      const ticketId = userId;
-      clearTimeout(autoDeleteTimeouts.get(ticketId));
-      
-      stats.accepted++;
-      stats.weekAccepted++;
-      
-      const staffId = interaction.user.id;
-      if (!staffStats.has(staffId)) staffStats.set(staffId, { accepted: 0, tag: interaction.user.tag });
-      staffStats.get(staffId).accepted++;
-      
-      await updateStaffRole(interaction.guild, staffId, staffStats.get(staffId).accepted);
-      
-      if (cfg.memberRoleId) {
-        await interaction.guild.members.fetch(userId).then(m => m.roles.add(cfg.memberRoleId)).catch(() => {});
-      }
-      
-      await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0x00FF00)], components: [] });
-      await interaction.channel.send(`<@${userId}> 🎉 Заявка принята! Добро пожаловать в RUNE!`);
-      
-      setTimeout(async () => {
-        try {
-          const ch = await interaction.guild.channels.fetch(interaction.channel.id).catch(() => null);
-          if (ch) await ch.delete();
-        } catch (error) {}
-      }, 30 * 60 * 1000);
-      
-      await interaction.channel.send(`⏰ **Канал будет удалён через 30 минут.**`);
-      
-      activeTickets.delete(ticketId);
-    }
-    
-    if (id.startsWith('consider_')) {
-      const userId = id.replace('consider_', '');
-      if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
-      
-      await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0xFFA500)], components: interaction.message.components });
-      await interaction.channel.send(`<@${userId}> ⏳ Заявка на рассмотрении.`);
-    }
-    
-    if (id.startsWith('call_')) {
-      const userId = id.replace('call_', '');
-      if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
-      
-      await interaction.update({ embeds: [EmbedBuilder.from(interaction.message.embeds[0]).setColor(0x808080)], components: interaction.message.components });
-      const vc = interaction.member.voice.channel;
-      const invite = vc ? await vc.createInvite({ maxAge: 86400, maxUses: 1 }).catch(() => null) : null;
-      await interaction.channel.send(`<@${userId}> 📞 Обзвон!${invite ? `\n🔊 ${invite.url}` : ''}`);
-    }
-    
-    if (id.startsWith('deny_')) {
-      const userId = id.replace('deny_', '');
-      if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
-      
-      const modal = new ModalBuilder()
-        .setCustomId(`deny_reason_${userId}_${interaction.channel.id}`)
-        .setTitle('❌ Причина отклонения');
-      
-      const reasonInput = new TextInputBuilder()
-        .setCustomId('reason')
-        .setLabel('Укажите причину')
-        .setPlaceholder('Например: Недостаточно часов...')
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(true)
-        .setMaxLength(500);
-      
-      modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
-      await interaction.showModal(modal);
-    }
-  }
-  
-  if (interaction.isModalSubmit() && interaction.customId.startsWith('deny_reason_')) {
-    const [_, userId, channelId] = interaction.customId.split('_');
-    const reason = interaction.fields.getTextInputValue('reason');
-    
-    if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
-    
-    await interaction.deferReply({ ephemeral: true });
-    
-    try {
-      const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
-      
-      stats.denied++;
-      stats.weekDenied++;
-      
-      const ticketId = userId;
-      clearTimeout(autoDeleteTimeouts.get(ticketId));
-      activeTickets.delete(ticketId);
-      
-      if (channel) {
-        await channel.send(`<@${userId}> 😔 **Заявка отклонена.**\n**Причина:** ${reason}`);
-        setTimeout(() => channel.delete().catch(() => {}), 5000);
-      }
-      
-      try {
-        const targetUser = await client.users.fetch(userId);
-        await targetUser.send({
-          embeds: [new EmbedBuilder()
-            .setTitle('❌ ЗАЯВКА ОТКЛОНЕНА | RUNE')
-            .setColor(0xFF0000)
-            .setDescription(`**Причина:** ${reason}\n\nВы можете подать заявку повторно позже.`)
-          ]
-        });
-      } catch (error) {}
-      
-      await interaction.editReply({ content: '✅ Заявка отклонена!' });
-      
-    } catch (error) {
-      await interaction.editReply('❌ Ошибка!');
-    }
-  }
-});
+        .setTimestamp();
 
-// ========== ОБРАБОТКА ОШИБОК ==========
-client.on('error', e => console.error('❌ Ошибка клиента:', e));
-process.on('unhandledRejection', e => console.error('❌ Необработанное отклонение:', e));
+    const staffButtons = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder().setCustomId(`ticket_close_${interaction.user.id}`).setLabel('🔒 Закрыть тикет').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId(`ticket_call_${interaction.user.id}`).setLabel('📞 Вызвать на обзвон').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId(`ticket_review_${interaction.user.id}`).setLabel('⏳ На рассмотрении').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId(`ticket_delete_${interaction.user.id}`).setLabel('🗑️ Удалить тикет').setStyle(ButtonStyle.Danger),
+        );
 
-// ========== ЗАПУСК ==========
-const token = process.env.DISCORD_TOKEN;
-if (!token) { 
-  console.error('❌ ТОКЕН НЕ НАЙДЕН!'); 
-  process.exit(1); 
+    await ticketChannel.send({ content: `||${interaction.user}|| <@&${staffRoleId}>`, embeds: [ticketEmbed], components: [staffButtons] });
+
+    await sendLog(process.env.COMMUNITY_GUILD_ID, 'ticket_created', {
+        userId: interaction.user.id,
+        userTag: interaction.user.tag,
+        channelId: ticketChannel.id,
+    });
+
+    await interaction.reply({ content: `✅ Тикет создан! Перейди в ${ticketChannel}`, ephemeral: true });
 }
 
-client.login(token);
+async function closeTicket(interaction, userId, reason) {
+    const channel = interaction.channel;
 
-// ========== HTTP СЕРВЕР ДЛЯ RENDER ==========
-http.createServer((req, res) => { 
-  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); 
-  const backup = globalBackup.get('last_backup');
-  res.end(`
-    <!DOCTYPE html>
-    <html>
-    <head><title>RUNE Bot</title></head>
-    <body style="font-family: Arial; text-align: center; padding: 50px;">
-      <h1>✅ RUNE Bot работает!</h1>
-      <p>🌍 Бэкап: ${backup ? `${backup.sourceGuildName} (${backup.totalChannels} кан.)` : 'не создан'}</p>
-      <p>📋 Серверов: ${client.guilds.cache.size}</p>
-      <p>⏰ Аптайм: ${getUptime()}</p>
-    </body>
-    </html>
-  `); 
-}).listen(process.env.PORT || 3000);
+    try {
+        const user = await client.users.fetch(userId);
+        await user.send(`🔒 **Твой тикет был закрыт.**\nПричина: ${reason}\nЕсли у тебя остались вопросы, создай новый тикет.`).catch(() => {});
+    } catch (e) {}
 
-console.log(`🌐 HTTP сервер запущен на порту ${process.env.PORT || 3000}`);
+    await sendLog(process.env.COMMUNITY_GUILD_ID, 'ticket_closed', {
+        userId,
+        userTag: (await client.users.fetch(userId).catch(() => ({ tag: 'Неизвестный' }))).tag,
+        staffId: interaction.user.id,
+        staffTag: interaction.user.tag,
+        reason,
+    });
+
+    await channel.send(`🔒 Тикет закрыт пользователем ${interaction.user}. Причина: ${reason}`);
+    await channel.permissionOverwrites.edit(userId, { ViewChannel: false, SendMessages: false });
+    await interaction.message.edit({ components: [] }).catch(() => {});
+}
+
+async function callUser(interaction, userId) {
+    const channel = interaction.channel;
+
+    try {
+        const user = await client.users.fetch(userId);
+        await user.send(`📞 **Тебя вызывают на обзвон!**\nПожалуйста, зайди в тикет: ${channel}`).catch(() => {});
+    } catch (e) {}
+
+    await channel.send(`📞 <@${userId}> вызывается на обзвон! Пожалуйста, зайди в голосовой канал.`);
+
+    await sendLog(process.env.COMMUNITY_GUILD_ID, 'call_invite', {
+        userId,
+        userTag: (await client.users.fetch(userId).catch(() => ({ tag: 'Неизвестный' }))).tag,
+        staffId: interaction.user.id,
+        staffTag: interaction.user.tag,
+        channelId: channel.id,
+    });
+}
+
+async function setTicketReview(interaction, userId) {
+    await interaction.channel.send(`⏳ Тикет взят на рассмотрение пользователем ${interaction.user}`);
+    await sendLog(process.env.COMMUNITY_GUILD_ID, 'ticket_review', {
+        userId,
+        userTag: (await client.users.fetch(userId).catch(() => ({ tag: 'Неизвестный' }))).tag,
+        staffId: interaction.user.id,
+        staffTag: interaction.user.tag,
+    });
+}
+
+async function deleteTicket(interaction, userId) {
+    const channel = interaction.channel;
+    await sendLog(process.env.COMMUNITY_GUILD_ID, 'ticket_deleted', {
+        userId,
+        userTag: (await client.users.fetch(userId).catch(() => ({ tag: 'Неизвестный' }))).tag,
+        staffId: interaction.user.id,
+        staffTag: interaction.user.tag,
+    });
+    await interaction.reply({ content: '🗑️ Тикет будет удалён через 5 секунд...', ephemeral: true });
+    setTimeout(() => channel.delete().catch(() => {}), 5000);
+}
+
+// ============================================================
+//                        СИСТЕМА ИВЕНТОВ
+// ============================================================
+function getEvents() { return readJSON('events.json'); }
+function saveEvents(data) { writeJSON('events.json', data); }
+function getReminders() { return readJSON('reminders.json'); }
+function saveReminders(data) { writeJSON('reminders.json', data); }
+
+async function updateEventEmbed(eventId) {
+    const events = getEvents();
+    const event = events[eventId];
+    if (!event || !event.active) return;
+
+    const channel = client.channels.cache.get(event.channelId);
+    if (!channel) return;
+
+    try {
+        const message = await channel.messages.fetch(event.messageId);
+        if (!message) return;
+
+        const oldEmbed = message.embeds[0];
+        if (!oldEmbed) return;
+
+        const formatList = (list) => {
+            if (!list || list.length === 0) return '>>> *Пока никто*';
+            return '>>> ' + list.map(id => `<@${id}>`).join('\n');
+        };
+
+        const newEmbed = new EmbedBuilder(oldEmbed)
+            .setFields(
+                {
+                    name: '📋 Дата и время',
+                    value: `📆 **${event.date}**\n🕐 **${event.time} МСК**\n\n<t:${event.unixTimestamp}:F>\n(<t:${event.unixTimestamp}:R>)`,
+                    inline: false
+                },
+                { name: `✅ Придут (${event.accepted.length})`, value: formatList(event.accepted), inline: true },
+                { name: `❌ Не придут (${event.declined.length})`, value: formatList(event.declined), inline: true },
+                { name: `🤔 Возможно (${event.tentative.length})`, value: formatList(event.tentative), inline: true },
+            );
+
+        await message.edit({ embeds: [newEmbed] });
+    } catch (e) {
+        console.error('Ошибка обновления эмбеда ивента:', e);
+    }
+}
+
+async function handleEventResponse(interaction, eventId, status) {
+    const events = getEvents();
+    const event = events[eventId];
+    
+    if (!event || !event.active) {
+        return interaction.reply({ content: '❌ Этот ивент уже завершён или не найден.', ephemeral: true });
+    }
+
+    const userId = interaction.user.id;
+
+    event.accepted = event.accepted.filter(id => id !== userId);
+    event.declined = event.declined.filter(id => id !== userId);
+    event.tentative = event.tentative.filter(id => id !== userId);
+
+    if (status === 'accept') event.accepted.push(userId);
+    if (status === 'decline') event.declined.push(userId);
+    if (status === 'tentative') event.tentative.push(userId);
+
+    saveEvents(events);
+    await updateEventEmbed(eventId);
+
+    const statusText = {
+        accept: '✅ Ты отмечен как **Приду**',
+        decline: '❌ Ты отмечен как **Не приду**',
+        tentative: '🤔 Ты отмечен как **Возможно**',
+    };
+
+    await interaction.reply({ content: `${statusText[status]} на ивент **${event.title}**`, ephemeral: true });
+}
+
+async function endEvent(interaction, eventId) {
+    const events = getEvents();
+    const event = events[eventId];
+
+    if (!event) return interaction.reply({ content: '❌ Ивент с таким ID не найден.', ephemeral: true });
+    if (!event.active) return interaction.reply({ content: '❌ Этот ивент уже завершён.', ephemeral: true });
+
+    event.active = false;
+    saveEvents(events);
+
+    const channel = client.channels.cache.get(event.channelId);
+    if (channel) {
+        try {
+            const message = await channel.messages.fetch(event.messageId);
+            if (message) {
+                const oldEmbed = message.embeds[0];
+                const formatList = (list) => {
+                    if (!list || list.length === 0) return '>>> *Никого*';
+                    return '>>> ' + list.map(id => `<@${id}>`).join('\n');
+                };
+
+                const finalEmbed = new EmbedBuilder(oldEmbed)
+                    .setTitle(`📅 [ЗАВЕРШЁН] ${event.title}`)
+                    .setColor(0x95A5A6)
+                    .setFields(
+                        { name: '📋 Дата и время', value: `📆 **${event.date}**\n🕐 **${event.time} МСК**`, inline: false },
+                        { name: `✅ Пришли (${event.accepted.length})`, value: formatList(event.accepted), inline: true },
+                        { name: `❌ Не пришли (${event.declined.length})`, value: formatList(event.declined), inline: true },
+                        { name: `🤔 Думали (${event.tentative.length})`, value: formatList(event.tentative), inline: true },
+                    );
+
+                await message.edit({ content: '🔒 **ИВЕНТ ЗАВЕРШЁН**', embeds: [finalEmbed], components: [] });
+            }
+        } catch (e) {}
+    }
+
+    const reminders = getReminders();
+    const filtered = reminders.filter(r => r.eventId !== eventId);
+    saveReminders(filtered);
+
+    await interaction.reply({ content: `✅ Ивент **${event.title}** завершён!`, ephemeral: true });
+}
+
+async function send10MinReminder(event) {
+    const guild = client.guilds.cache.get(event.guildId);
+    if (!guild) return;
+
+    const channel = guild.channels.cache.get(event.channelId);
+    if (!channel) return;
+
+    const usersToPing = [...new Set([...event.accepted, ...event.tentative])];
+
+    let pingMessage = `⏰ **НАПОМИНАНИЕ!**\n📅 Ивент **${event.title}** начнётся через **10 минут**!\n\n`;
+    if (usersToPing.length > 0) pingMessage += usersToPing.map(id => `<@${id}>`).join(' ') + '\n\n';
+    pingMessage += `🕐 Время: **${event.time} МСК**\n📆 Дата: **${event.date}**`;
+
+    await channel.send(pingMessage).catch(() => {});
+
+    for (const userId of usersToPing) {
+        try {
+            const user = await client.users.fetch(userId);
+            if (user) {
+                await user.send({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setTitle('⏰ Напоминание об ивенте!')
+                            .setDescription(`📅 **${event.title}**\n\nИвент начнётся через **10 минут**!\n\n🕐 Время: **${event.time} МСК**\n📆 Дата: **${event.date}**\n\nНе опаздывай! ⚔️`)
+                            .setColor(0xF1C40F)
+                    ]
+                }).catch(() => {});
+            }
+        } catch (e) {}
+    }
+}
+
+function checkEventReminders() {
+    const reminders = getReminders();
+    const events = getEvents();
+    const now = Date.now();
+    const toRemove = [];
+
+    for (const reminder of reminders) {
+        if (now >= reminder.reminderTime) {
+            const event = events[reminder.eventId];
+            if (event && event.active && reminder.type === '10min' && !event.reminded10min) {
+                send10MinReminder(event);
+                event.reminded10min = true;
+                saveEvents(events);
+            }
+            toRemove.push(reminder);
+        }
+    }
+
+    if (toRemove.length > 0) {
+        const filtered = reminders.filter(r => !toRemove.includes(r));
+        saveReminders(filtered);
+    }
+}
+
+// ============================================================
+//                        СИСТЕМА ОТПУСКОВ
+// ============================================================
+function getAfkData() { return readJSON('afk.json'); }
+function saveAfkData(data) { writeJSON('afk.json', data); }
+
+function parseTime(timeStr) {
+    const lower = timeStr.toLowerCase().trim();
+    let totalMs = 0;
+
+    const hourMatch = lower.match(/(\d+)\s*(?:час|ч|h|hour|hours)/);
+    if (hourMatch) totalMs += parseInt(hourMatch[1]) * 60 * 60 * 1000;
+
+    const minMatch = lower.match(/(\d+)\s*(?:мин|минут|м|m|min|mins|minute|minutes)/);
+    if (minMatch) totalMs += parseInt(minMatch[1]) * 60 * 1000;
+
+    return totalMs > 0 ? totalMs : null;
+}
+
+function formatDuration(ms) {
+    const days = Math.floor(ms / (24 * 60 * 60 * 1000));
+    const hours = Math.floor((ms % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+    const minutes = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
+
+    const parts = [];
+    if (days > 0) parts.push(`${days} дн.`);
+    if (hours > 0) parts.push(`${hours} ч.`);
+    if (minutes > 0) parts.push(`${minutes} мин.`);
+    return parts.join(' ') || 'меньше минуты';
+}
+
+async function giveAfkRole(guild, userId) {
+    const roleId = process.env.AFK_ROLE_ID;
+    if (!roleId) return;
+    try {
+        const member = await guild.members.fetch(userId);
+        if (member) await member.roles.add(roleId);
+    } catch (e) {}
+}
+
+async function removeAfkRole(guild, userId) {
+    const roleId = process.env.AFK_ROLE_ID;
+    if (!roleId) return;
+    try {
+        const member = await guild.members.fetch(userId);
+        if (member) await member.roles.remove(roleId);
+    } catch (e) {}
+}
+
+async function processVacation(interaction) {
+    const days = parseInt(interaction.fields.getTextInputValue('vacation_days'));
+    const reason = interaction.fields.getTextInputValue('vacation_reason');
+
+    if (isNaN(days) || days <= 0) {
+        return interaction.reply({ content: '❌ Укажи количество дней числом (больше 0)!', ephemeral: true });
+    }
+
+    const userId = interaction.user.id;
+    const afkData = getAfkData();
+
+    if (afkData[userId] && afkData[userId].active) {
+        return interaction.reply({ content: '❌ Ты уже находишься в отпуске/отсутствии!', ephemeral: true });
+    }
+
+    const now = Date.now();
+    const returnTime = now + (days * 24 * 60 * 60 * 1000);
+
+    afkData[userId] = { type: 'vacation', reason, days, startTime: now, returnTime, active: true, username: interaction.user.tag };
+    saveAfkData(afkData);
+
+    await giveAfkRole(interaction.guild, userId);
+
+    const afkChannelId = process.env.AFK_CHANNEL_ID;
+    if (afkChannelId) {
+        const afkChannel = interaction.guild.channels.cache.get(afkChannelId);
+        if (afkChannel) {
+            const embed = new EmbedBuilder()
+                .setTitle('📅 ОТПУСК')
+                .setDescription(`**${interaction.user}** ушёл в отпуск!`)
+                .setColor(0xE67E22)
+                .addFields(
+                    { name: '📅 Дней', value: `${days}`, inline: true },
+                    { name: '📝 Причина', value: reason, inline: true },
+                    { name: '🔄 Возвращение', value: `<t:${Math.floor(returnTime / 1000)}:R>`, inline: true },
+                )
+                .setFooter({ text: `${interaction.user.tag} • ${interaction.user.id}` })
+                .setTimestamp();
+
+            const button = new ActionRowBuilder()
+                .addComponents(new ButtonBuilder().setCustomId(`afk_return_${userId}`).setLabel('🔄 Вернулся').setStyle(ButtonStyle.Success));
+
+            await afkChannel.send({ embeds: [embed], components: [button] });
+        }
+    }
+
+    await sendLog(process.env.PRIVATE_GUILD_ID, 'afk_vacation', { userId, userTag: interaction.user.tag, days, reason, returnTime });
+
+    await interaction.reply({ content: `✅ Ты ушёл в отпуск на **${days}** дней!\nПричина: **${reason}**\nОжидаемое возвращение: <t:${Math.floor(returnTime / 1000)}:R>`, ephemeral: true });
+}
+
+async function processAway(interaction) {
+    const timeStr = interaction.fields.getTextInputValue('away_time');
+    const reason = interaction.fields.getTextInputValue('away_reason');
+
+    const returnMs = parseTime(timeStr);
+    if (!returnMs) {
+        return interaction.reply({ content: '❌ Не могу понять время. Укажи в формате: "2 часа", "30 минут", "1 час 30 минут"', ephemeral: true });
+    }
+
+    const userId = interaction.user.id;
+    const afkData = getAfkData();
+
+    if (afkData[userId] && afkData[userId].active) {
+        return interaction.reply({ content: '❌ Ты уже находишься в отпуске/отсутствии!', ephemeral: true });
+    }
+
+    const now = Date.now();
+    const returnTime = now + returnMs;
+
+    afkData[userId] = { type: 'away', reason, timeStr, startTime: now, returnTime, active: true, username: interaction.user.tag };
+    saveAfkData(afkData);
+
+    await giveAfkRole(interaction.guild, userId);
+
+    const afkChannelId = process.env.AFK_CHANNEL_ID;
+    if (afkChannelId) {
+        const afkChannel = interaction.guild.channels.cache.get(afkChannelId);
+        if (afkChannel) {
+            const embed = new EmbedBuilder()
+                .setTitle('⏰ ОТОШЁЛ')
+                .setDescription(`**${interaction.user}** отошёл на время!`)
+                .setColor(0x3498DB)
+                .addFields(
+                    { name: '⏰ Время', value: timeStr, inline: true },
+                    { name: '📝 Причина', value: reason, inline: true },
+                    { name: '🔄 Вернётся', value: `<t:${Math.floor(returnTime / 1000)}:R>`, inline: true },
+                )
+                .setFooter({ text: `${interaction.user.tag} • ${interaction.user.id}` })
+                .setTimestamp();
+
+            const button = new ActionRowBuilder()
+                .addComponents(new ButtonBuilder().setCustomId(`afk_return_${userId}`).setLabel('🔄 Вернулся').setStyle(ButtonStyle.Success));
+
+            await afkChannel.send({ embeds: [embed], components: [button] });
+        }
+    }
+
+    await sendLog(process.env.PRIVATE_GUILD_ID, 'afk_away', { userId, userTag: interaction.user.tag, timeStr, reason, returnTime });
+
+    await interaction.reply({ content: `✅ Ты отошёл на **${timeStr}**!\nПричина: **${reason}**\nОжидаемое возвращение: <t:${Math.floor(returnTime / 1000)}:R>`, ephemeral: true });
+}
+
+async function returnFromAfk(interaction, userId) {
+    const afkData = getAfkData();
+
+    if (!afkData[userId] || !afkData[userId].active) {
+        return interaction.reply({ content: '❌ Ты не в отпуске/отсутствии!', ephemeral: true });
+    }
+
+    const data = afkData[userId];
+    const typeText = data.type === 'vacation' ? 'отпуска' : 'отсутствия';
+    const timeAway = formatDuration(Date.now() - data.startTime);
+
+    await removeAfkRole(interaction.guild, userId);
+
+    data.active = false;
+    data.returnedAt = Date.now();
+    saveAfkData(afkData);
+
+    await interaction.message.edit({
+        embeds: [
+            new EmbedBuilder(interaction.message.embeds[0])
+                .setTitle(`✅ ВЕРНУЛСЯ (был: ${data.type === 'vacation' ? 'Отпуск' : 'Отошёл'})`)
+                .setColor(0x2ECC71)
+                .addFields({ name: '⏱️ Отсутствовал', value: timeAway, inline: false })
+        ],
+        components: [],
+    }).catch(() => {});
+
+    await sendLog(process.env.PRIVATE_GUILD_ID, 'afk_return', { userId, userTag: interaction.user.tag, timeAway });
+
+    await interaction.reply({ content: `✅ Ты вернулся из ${typeText}! Ты отсутствовал: **${timeAway}**`, ephemeral: true });
+}
+
+async function showAfkList(interaction) {
+    const afkData = getAfkData();
+    const activeEntries = Object.entries(afkData).filter(([_, data]) => data.active);
+
+    if (activeEntries.length === 0) {
+        return interaction.reply({ content: '✅ Все на месте! Никто не в отпуске/отсутствии.', ephemeral: true });
+    }
+
+    const embed = new EmbedBuilder()
+        .setTitle('🏖️ Отсутствующие участники')
+        .setColor(0xE67E22)
+        .setDescription(`Всего отсутствует: **${activeEntries.length}**`)
+        .setTimestamp();
+
+    for (const [userId, data] of activeEntries) {
+        const typeEmoji = data.type === 'vacation' ? '📅' : '⏰';
+        const typeText = data.type === 'vacation' ? 'Отпуск' : 'Отошёл';
+        embed.addFields({
+            name: `${typeEmoji} <@${userId}>`,
+            value: `**Тип:** ${typeText}\n**Причина:** ${data.reason}\n**Вернётся:** <t:${Math.floor(data.returnTime / 1000)}:R>`,
+            inline: false
+        });
+    }
+
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+function checkExpiredAfk() {
+    const afkData = getAfkData();
+    const now = Date.now();
+    let changed = false;
+
+    for (const [userId, data] of Object.entries(afkData)) {
+        if (data.active && now >= data.returnTime) {
+            data.active = false;
+            data.autoReturned = true;
+            changed = true;
+
+            const guild = client.guilds.cache.get(process.env.PRIVATE_GUILD_ID);
+            if (guild) removeAfkRole(guild, userId).catch(() => {});
+        }
+    }
+
+    if (changed) saveAfkData(afkData);
+}
+
+// ============================================================
+//                        СБОР КОМАНД
+// ============================================================
+client.commands = new Collection();
+const commandsPath = path.join(__dirname, 'commands');
+if (fs.existsSync(commandsPath)) {
+    const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+    for (const file of commandFiles) {
+        const command = require(path.join(commandsPath, file));
+        client.commands.set(command.data.name, command);
+    }
+}
+
+// ============================================================
+//                        ГОТОВНОСТЬ
+// ============================================================
+client.once('ready', () => {
+    console.log(`✅ Бот ${client.user.tag} запущен!`);
+    console.log(`На серверах: ${client.guilds.cache.size}`);
+
+    // Проверка напоминаний каждые 30 секунд
+    setInterval(checkEventReminders, 30000);
+    // Проверка авто-возврата из отпусков каждую минуту
+    setInterval(checkExpiredAfk, 60000);
+});
+
+// ============================================================
+//                        ВХОД НА СЕРВЕР
+// ============================================================
+client.on('guildMemberAdd', async member => {
+    if (member.guild.id === process.env.COMMUNITY_GUILD_ID) {
+        await sendLog(process.env.COMMUNITY_GUILD_ID, 'member_join', {
+            userId: member.id,
+            userTag: member.user.tag,
+            createdAt: member.user.createdTimestamp,
+        });
+    }
+});
+
+// ============================================================
+//                    ОБРАБОТКА ВЗАИМОДЕЙСТВИЙ
+// ============================================================
+client.on('interactionCreate', async interaction => {
+    
+    // ===== СЛЕШ-КОМАНДЫ =====
+    if (interaction.isChatInputCommand()) {
+        const command = client.commands.get(interaction.commandName);
+        if (!command) return;
+
+        // Обработка кастомных команд прямо здесь
+        if (interaction.commandName === 'event') {
+            const subcommand = interaction.options.getSubcommand();
+            
+            if (subcommand === 'create') {
+                const title = interaction.options.getString('название');
+                const description = interaction.options.getString('описание');
+                const date = interaction.options.getString('дата');
+                const time = interaction.options.getString('время');
+                const channel = interaction.options.getChannel('канал') || interaction.channel;
+
+                const [day, month, year] = date.split('.').map(Number);
+                const [hours, minutes] = time.split(':').map(Number);
+                const eventDate = new Date(year, month - 1, day, hours, minutes);
+                eventDate.setHours(eventDate.getHours() - 3); // МСК → UTC
+                const unixTimestamp = Math.floor(eventDate.getTime() / 1000);
+
+                if (eventDate <= new Date()) {
+                    return interaction.reply({ content: '❌ Дата ивента должна быть в будущем!', ephemeral: true });
+                }
+
+                const eventId = Date.now().toString(36).toUpperCase() + Math.random().toString(36).substring(2, 5);
+
+                const embed = new EmbedBuilder()
+                    .setTitle(`📅 ${title}`)
+                    .setDescription(description)
+                    .setColor(0x5865F2)
+                    .addFields(
+                        { name: '📋 Дата и время', value: `📆 **${date}**\n🕐 **${time} МСК**\n\n<t:${unixTimestamp}:F>\n(<t:${unixTimestamp}:R>)`, inline: false },
+                        { name: '✅ Придут (0)', value: '>>> *Пока никто*', inline: true },
+                        { name: '❌ Не придут (0)', value: '>>> *Пока никто*', inline: true },
+                        { name: '🤔 Возможно (0)', value: '>>> *Пока никто*', inline: true },
+                    )
+                    .setFooter({ text: `ID: ${eventId} • Создал: ${interaction.user.tag}` })
+                    .setTimestamp();
+
+                const buttons = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder().setCustomId(`event_accept_${eventId}`).setLabel('✅ Приду').setStyle(ButtonStyle.Success),
+                        new ButtonBuilder().setCustomId(`event_decline_${eventId}`).setLabel('❌ Не приду').setStyle(ButtonStyle.Danger),
+                        new ButtonBuilder().setCustomId(`event_tentative_${eventId}`).setLabel('🤔 Возможно').setStyle(ButtonStyle.Secondary),
+                    );
+
+                const message = await channel.send({ content: '||@everyone||', embeds: [embed], components: [buttons] });
+
+                const events = getEvents();
+                events[eventId] = {
+                    messageId: message.id, channelId: channel.id, guildId: channel.guild.id,
+                    title, description, date, time, unixTimestamp,
+                    creator: interaction.user.id, created: Date.now(),
+                    accepted: [], declined: [], tentative: [],
+                    active: true, reminded10min: false,
+                };
+                saveEvents(events);
+
+                const reminderTime = eventDate.getTime() - (10 * 60 * 1000);
+                if (reminderTime > Date.now()) {
+                    const reminders = getReminders();
+                    reminders.push({ eventId, reminderTime, type: '10min' });
+                    saveReminders(reminders);
+                }
+
+                await sendLog(process.env.PRIVATE_GUILD_ID, 'event_created', {
+                    title, staffId: interaction.user.id, staffTag: interaction.user.tag, date, time,
+                });
+
+                await interaction.reply({ content: `✅ **Ивент создан!**\n\n📋 **Название:** ${title}\n📆 **Дата:** ${date}\n🕐 **Время:** ${time} МСК\n🆔 **ID:** \`${eventId}\`\n\n⏰ Напоминание за 10 минут до начала.`, ephemeral: true });
+                return;
+            }
+
+            if (subcommand === 'end') {
+                const eventId = interaction.options.getString('id');
+                await endEvent(interaction, eventId);
+                return;
+            }
+        }
+
+        if (interaction.commandName === 'raid') {
+            const extraMessage = interaction.options.getString('сообщение') || '';
+            let content = '@everyone **⚔️ RAID! ⚔️**';
+            if (extraMessage) content += `\n\n📋 ${extraMessage}`;
+            content += '\n\n**Всем срочно зайти в игру!** 🔥';
+            await interaction.channel.send({ content });
+            await interaction.reply({ content: '✅ Рейд объявлен!', ephemeral: true });
+            return;
+        }
+
+        if (interaction.commandName === 'afk') {
+            const subcommand = interaction.options.getSubcommand();
+
+            if (subcommand === 'setup') {
+                const embed = new EmbedBuilder()
+                    .setTitle('🏖️ ОТПУСК / ОТСУТСТВИЕ')
+                    .setDescription(
+                        'Если тебе нужно отлучиться — нажми на одну из кнопок ниже.\n\n' +
+                        '**📅 Отпуск** — если отсутствуешь больше суток\n' +
+                        '**⏰ Отошёл** — если отлучился на несколько часов/минут\n\n' +
+                        '⚠️ Стафф будет видеть твой статус.\n' +
+                        'По возвращении нажми кнопку **🔄 Вернулся** в этом же канале.'
+                    )
+                    .setColor(0x3498DB)
+                    .setFooter({ text: 'Клан RUNA • Отпуска' });
+
+                const buttons = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder().setCustomId('afk_vacation').setLabel('📅 Отпуск').setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder().setCustomId('afk_away').setLabel('⏰ Отошёл').setStyle(ButtonStyle.Secondary),
+                    );
+
+                await interaction.channel.send({ embeds: [embed], components: [buttons] });
+                await interaction.reply({ content: '✅ Панель отпусков создана!', ephemeral: true });
+                return;
+            }
+
+            if (subcommand === 'list') {
+                await showAfkList(interaction);
+                return;
+            }
+        }
+
+        if (interaction.commandName === 'setup') {
+            const subcommand = interaction.options.getSubcommand();
+
+            if (subcommand === 'apply') {
+                const embed = new EmbedBuilder()
+                    .setTitle('📋 ПОДАТЬ ЗАЯВКУ В КЛАН RUNA')
+                    .setDescription(
+                        '**ТРЕБОВАНИЯ:**\n\n' +
+                        '● 3000 часов на аккаунте и более\n' +
+                        '● 15+ лет\n' +
+                        '● Иметь хороший микрофон\n' +
+                        '● Умение слушать коллы и адекватно реагировать на критику\n' +
+                        '● Минимум 6 часов стабильного онлайна в день\n\n' +
+                        '**Статус набора:** 🟢 Открыт'
+                    )
+                    .setColor(0x57F287);
+
+                const row = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder().setCustomId('apply_button').setLabel('📝 Подать заявку').setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder().setCustomId('toggle_status').setLabel('🟢 Статус: Открыт').setStyle(ButtonStyle.Success),
+                    );
+
+                await interaction.channel.send({ embeds: [embed], components: [row] });
+                await interaction.reply({ content: '✅ Панель заявок создана!', ephemeral: true });
+                return;
+            }
+
+            if (subcommand === 'tickets') {
+                const embed = new EmbedBuilder()
+                    .setTitle('🎫 Поддержка')
+                    .setDescription('Нужна помощь или есть вопросы?\nНажми кнопку ниже, чтобы создать тикет.\n\n⏰ Стафф ответит в ближайшее время.')
+                    .setColor(0x3498DB);
+
+                const row = new ActionRowBuilder()
+                    .addComponents(new ButtonBuilder().setCustomId('create_ticket').setLabel('🎫 Создать тикет').setStyle(ButtonStyle.Primary));
+
+                await interaction.channel.send({ embeds: [embed], components: [row] });
+                await interaction.reply({ content: '✅ Панель тикетов создана!', ephemeral: true });
+                return;
+            }
+        }
+
+        // Стандартный вызов команды из файла
+        try {
+            await command.execute(interaction);
+        } catch (error) {
+            console.error(error);
+            await interaction.reply({ content: '❌ Произошла ошибка!', ephemeral: true }).catch(() => {});
+        }
+        return;
+    }
+
+    // ===== КНОПКИ =====
+    if (interaction.isButton()) {
+        const customId = interaction.customId;
+
+        // Заявки
+        if (customId === 'apply_button') {
+            const modal = new ModalBuilder().setCustomId('apply_modal').setTitle('📋 Заявка в клан RUNA');
+
+            const hoursInput = new TextInputBuilder().setCustomId('hours').setLabel('Сколько часов в Rust?').setPlaceholder('Например: 3500').setStyle(TextInputStyle.Short).setRequired(true);
+            const ageInput = new TextInputBuilder().setCustomId('age').setLabel('Сколько тебе лет?').setPlaceholder('Например: 18').setStyle(TextInputStyle.Short).setRequired(true);
+            const dailyHoursInput = new TextInputBuilder().setCustomId('daily_hours').setLabel('Сколько часов в день готов уделять?').setPlaceholder('Например: 6-8 часов').setStyle(TextInputStyle.Short).setRequired(true);
+            const roleInput = new TextInputBuilder().setCustomId('role').setLabel('Твоя роль (электрик, комбат, билдер, фермер)').setPlaceholder('Например: комбат').setStyle(TextInputStyle.Short).setRequired(true);
+            const listenInput = new TextInputBuilder().setCustomId('listen_skill').setLabel('Умение слушать коллы (от 1 до 10)').setPlaceholder('Например: 8').setStyle(TextInputStyle.Short).setRequired(true);
+
+            modal.addComponents(
+                new ActionRowBuilder().addComponents(hoursInput),
+                new ActionRowBuilder().addComponents(ageInput),
+                new ActionRowBuilder().addComponents(dailyHoursInput),
+                new ActionRowBuilder().addComponents(roleInput),
+                new ActionRowBuilder().addComponents(listenInput),
+            );
+
+            await interaction.showModal(modal);
+            return;
+        }
+
+        if (customId === 'toggle_status') {
+            if (!interaction.member.roles.cache.has(process.env.ADMIN_ROLE_ID)) {
+                return interaction.reply({ content: '⛔ Только администратор может менять статус набора.', ephemeral: true });
+            }
+
+            const embed = interaction.message.embeds[0];
+            const oldDescription = embed.description;
+            const isOpen = oldDescription.includes('🟢 Открыт');
+
+            const newEmbed = new EmbedBuilder(embed)
+                .setDescription(oldDescription.replace(isOpen ? '🟢 Открыт' : '🔴 Закрыт', isOpen ? '🔴 Закрыт' : '🟢 Открыт'))
+                .setColor(isOpen ? 0xED4245 : 0x57F287);
+
+            const newRow = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder().setCustomId('apply_button').setLabel('📝 Подать заявку').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId('toggle_status').setLabel(isOpen ? '🔴 Статус: Закрыт' : '🟢 Статус: Открыт').setStyle(isOpen ? ButtonStyle.Danger : ButtonStyle.Success),
+                );
+
+            await interaction.update({ embeds: [newEmbed], components: [newRow] });
+            return;
+        }
+
+        // Принять/отклонить заявку (приватка)
+        if (customId.startsWith('accept_')) {
+            const targetUserId = customId.split('_')[1];
+            if (!interaction.member.roles.cache.has(process.env.ADMIN_ROLE_ID)) {
+                return interaction.reply({ content: '⛔ Нет прав!', ephemeral: true });
+            }
+            try {
+                const user = await client.users.fetch(targetUserId);
+                const privateGuild = client.guilds.cache.get(process.env.PRIVATE_GUILD_ID);
+                const inviteChannel = privateGuild.channels.cache.find(c => c.type === 0);
+                const invite = await inviteChannel.createInvite({ maxUses: 1, maxAge: 86400, unique: true, reason: `Приглашение для ${user.tag}` });
+                await user.send(`🎉 **Твоя заявка в клан RUNA одобрена!**\nВот приглашение: ${invite.url}\n⚠️ Ссылка одноразовая и действует 24 часа.`).catch(() => {});
+                await interaction.update({ content: '✅ Заявка одобрена! Приглашение отправлено в ЛС.', components: [], embeds: [] });
+            } catch (e) {
+                await interaction.reply({ content: '❌ Ошибка при отправке приглашения.', ephemeral: true });
+            }
+            return;
+        }
+
+        if (customId.startsWith('deny_')) {
+            const targetUserId = customId.split('_')[1];
+            if (!interaction.member.roles.cache.has(process.env.ADMIN_ROLE_ID)) {
+                return interaction.reply({ content: '⛔ Нет прав!', ephemeral: true });
+            }
+            try {
+                const user = await client.users.fetch(targetUserId);
+                await user.send('❌ **Твоя заявка в клан RUNA отклонена.**\nПопробуй подать заявку позже или улучши свои навыки.').catch(() => {});
+                await interaction.update({ content: '❌ Заявка отклонена.', components: [], embeds: [] });
+            } catch (e) {
+                await interaction.reply({ content: '❌ Ошибка при отправке уведомления.', ephemeral: true });
+            }
+            return;
+        }
+
+        // Тикеты
+        if (customId === 'create_ticket') {
+            await createTicket(interaction);
+            return;
+        }
+
+        if (customId.startsWith('ticket_close_')) {
+            const userId = customId.split('_')[2];
+            const modal = new ModalBuilder().setCustomId(`close_modal_${userId}`).setTitle('🔒 Закрытие тикета');
+            const reasonInput = new TextInputBuilder().setCustomId('close_reason').setLabel('Причина закрытия').setPlaceholder('Например: Вопрос решён').setStyle(TextInputStyle.Paragraph).setRequired(true);
+            modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
+            await interaction.showModal(modal);
+            return;
+        }
+
+        if (customId.startsWith('ticket_call_')) {
+            const userId = customId.split('_')[2];
+            await callUser(interaction, userId);
+            await interaction.reply({ content: '📞 Вызов отправлен!', ephemeral: true });
+            return;
+        }
+
+        if (customId.startsWith('ticket_review_')) {
+            const userId = customId.split('_')[2];
+            await setTicketReview(interaction, userId);
+            await interaction.reply({ content: '⏳ Статус обновлён!', ephemeral: true });
+            return;
+        }
+
+        if (customId.startsWith('ticket_delete_')) {
+            const userId = customId.split('_')[2];
+            await deleteTicket(interaction, userId);
+            return;
+        }
+
+        // Ивенты
+        if (customId.startsWith('event_accept_')) {
+            await handleEventResponse(interaction, customId.replace('event_accept_', ''), 'accept');
+            return;
+        }
+        if (customId.startsWith('event_decline_')) {
+            await handleEventResponse(interaction, customId.replace('event_decline_', ''), 'decline');
+            return;
+        }
+        if (customId.startsWith('event_tentative_')) {
+            await handleEventResponse(interaction, customId.replace('event_tentative_', ''), 'tentative');
+            return;
+        }
+
+        // Отпуска
+        if (customId === 'afk_vacation') {
+            const afkData = getAfkData();
+            if (afkData[interaction.user.id] && afkData[interaction.user.id].active) {
+                return interaction.reply({ content: '❌ Ты уже находишься в отпуске/отсутствии!', ephemeral: true });
+            }
+
+            const modal = new ModalBuilder().setCustomId('vacation_modal').setTitle('📅 Оформление отпуска');
+            const daysInput = new TextInputBuilder().setCustomId('vacation_days').setLabel('На сколько дней?').setPlaceholder('Например: 7').setStyle(TextInputStyle.Short).setRequired(true);
+            const reasonInput = new TextInputBuilder().setCustomId('vacation_reason').setLabel('Причина отпуска').setPlaceholder('Например: Уезжаю на море').setStyle(TextInputStyle.Paragraph).setRequired(true);
+            modal.addComponents(new ActionRowBuilder().addComponents(daysInput), new ActionRowBuilder().addComponents(reasonInput));
+            await interaction.showModal(modal);
+            return;
+        }
+
+        if (customId === 'afk_away') {
+            const afkData = getAfkData();
+            if (afkData[interaction.user.id] && afkData[interaction.user.id].active) {
+                return interaction.reply({ content: '❌ Ты уже находишься в отпуске/отсутствии!', ephemeral: true });
+            }
+
+            const modal = new ModalBuilder().setCustomId('away_modal').setTitle('⏰ Отсутствие');
+            const timeInput = new TextInputBuilder().setCustomId('away_time').setLabel('На сколько часов или минут?').setPlaceholder('Например: 2 часа или 30 минут').setStyle(TextInputStyle.Short).setRequired(true);
+            const reasonInput = new TextInputBuilder().setCustomId('away_reason').setLabel('Причина отсутствия').setPlaceholder('Например: Пошёл в магазин').setStyle(TextInputStyle.Paragraph).setRequired(true);
+            modal.addComponents(new ActionRowBuilder().addComponents(timeInput), new ActionRowBuilder().addComponents(reasonInput));
+            await interaction.showModal(modal);
+            return;
+        }
+
+        if (customId.startsWith('afk_return_')) {
+            const userId = customId.replace('afk_return_', '');
+            await returnFromAfk(interaction, userId);
+            return;
+        }
+    }
+
+    // ===== МОДАЛЬНЫЕ ОКНА =====
+    if (interaction.isModalSubmit()) {
+        
+        if (interaction.customId === 'apply_modal') {
+            const hours = parseInt(interaction.fields.getTextInputValue('hours'));
+            const age = parseInt(interaction.fields.getTextInputValue('age'));
+            const dailyHours = interaction.fields.getTextInputValue('daily_hours');
+            const role = interaction.fields.getTextInputValue('role');
+            const listenSkill = parseInt(interaction.fields.getTextInputValue('listen_skill'));
+
+            if (hours < 3000) return interaction.reply({ content: '❌ **Заявка отклонена.**\nПричина: у тебя меньше 3000 часов на аккаунте.', ephemeral: true });
+            if (age < 15) return interaction.reply({ content: '❌ **Заявка отклонена.**\nПричина: тебе меньше 15 лет.', ephemeral: true });
+            if (listenSkill < 1 || listenSkill > 10) return interaction.reply({ content: '❌ **Ошибка.**\nУмение слушать коллы должно быть от 1 до 10.', ephemeral: true });
+
+            const privateGuild = client.guilds.cache.get(process.env.PRIVATE_GUILD_ID);
+            if (!privateGuild) return interaction.reply({ content: '❌ Приватный сервер не найден.', ephemeral: true });
+
+            const applyChannel = privateGuild.channels.cache.get(process.env.APPLY_CHANNEL_ID);
+            if (!applyChannel) return interaction.reply({ content: '❌ Канал заявок не найден.', ephemeral: true });
+
+            const embed = new EmbedBuilder()
+                .setTitle('📋 Новая заявка в клан RUNA')
+                .setColor(0xFFA500)
+                .addFields(
+                    { name: '👤 Discord', value: `${interaction.user} (${interaction.user.tag})`, inline: false },
+                    { name: '🆔 ID', value: interaction.user.id, inline: true },
+                    { name: '⏱️ Часы в Rust', value: `${hours}`, inline: true },
+                    { name: '🎂 Возраст', value: `${age}`, inline: true },
+                    { name: '🕐 Онлайн в день', value: dailyHours, inline: true },
+                    { name: '🎯 Роль', value: role, inline: true },
+                    { name: '👂 Умение слушать коллы', value: `${listenSkill}/10`, inline: true },
+                )
+                .setTimestamp();
+
+            const buttons = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder().setCustomId(`accept_${interaction.user.id}`).setLabel('✅ Принять').setStyle(ButtonStyle.Success),
+                    new ButtonBuilder().setCustomId(`deny_${interaction.user.id}`).setLabel('❌ Отклонить').setStyle(ButtonStyle.Danger),
+                );
+
+            await applyChannel.send({ embeds: [embed], components: [buttons] });
+
+            await sendLog(process.env.COMMUNITY_GUILD_ID, 'apply', {
+                userId: interaction.user.id, userTag: interaction.user.tag,
+                hours, age, dailyHours, role, listenSkill,
+            });
+
+            await interaction.reply({ content: '✅ **Заявка успешно отправлена!**\nОжидай, скоро с тобой свяжутся.', ephemeral: true });
+            return;
+        }
+
+        if (interaction.customId === 'vacation_modal') {
+            await processVacation(interaction);
+            return;
+        }
+
+        if (interaction.customId === 'away_modal') {
+            await processAway(interaction);
+            return;
+        }
+
+        if (interaction.customId.startsWith('close_modal_')) {
+            const userId = interaction.customId.split('_')[2];
+            const reason = interaction.fields.getTextInputValue('close_reason');
+            await closeTicket(interaction, userId, reason);
+            await interaction.reply({ content: '✅ Тикет закрыт.', ephemeral: true });
+            return;
+        }
+    }
+});
+
+// ============================================================
+//                        ЗАПУСК
+// ============================================================
+client.login(process.env.BOT_TOKEN);
