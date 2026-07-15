@@ -1,7 +1,7 @@
 {
   "name": "winter-team-bot",
-  "version": "4.0.0",
-  "description": "Бот для клана RUNA в Rust",
+  "version": "5.0.0",
+  "description": "Бот клана RUNA - Rust",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
