@@ -817,7 +817,6 @@ client.once('ready', async () => {
 
     console.log(`✅ Сервер: ${guild.name}`);
 
-    // Проверяем роль
     try {
         const staffRole = await guild.roles.fetch(CONFIG.STAFF_ROLE);
         if (!staffRole) {
@@ -830,11 +829,9 @@ client.once('ready', async () => {
         return;
     }
 
-    // Регистрируем команды
     console.log('🔄 Регистрация команд...');
     await registerCommands();
 
-    // Статус
     client.user.setPresence({
         activities: [{ name: 'RUNA | /panel ticket', type: 3 }],
         status: 'online'
@@ -844,9 +841,7 @@ client.once('ready', async () => {
     console.log('📋 Команды: /panel ticket, /panel status, /recruitment, /status, /tickets, /clearpanel, /register');
 });
 
-// ========== ОБРАБОТКА ОШИБОК ==========
 client.on('error', console.error);
 process.on('unhandledRejection', console.error);
 
-// ========== ЗАПУСК ==========
 client.login(process.env.DISCORD_TOKEN);
