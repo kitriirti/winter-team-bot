@@ -71,7 +71,7 @@ async function registerCommands() {
     const commands = [
         {
             name: 'panel',
-            description: '📋 Создать панель управления (только для стаффа)',
+            description: 'Создать панель управления (только для стаффа)',
             options: [
                 {
                     name: 'type',
@@ -79,31 +79,31 @@ async function registerCommands() {
                     type: 3,
                     required: true,
                     choices: [
-                        { name: '🎫 Тикеты', value: 'ticket' },
-                        { name: '📊 Статус', value: 'status' }
+                        { name: 'Тикеты', value: 'ticket' },
+                        { name: 'Статус', value: 'status' }
                     ]
                 }
             ]
         },
         {
             name: 'recruitment',
-            description: '🔓 Открыть или закрыть набор в клан (только для стаффа)'
+            description: 'Открыть или закрыть набор в клан (только для стаффа)'
         },
         {
             name: 'status',
-            description: '📊 Проверить статус набора в клан'
+            description: 'Проверить статус набора в клан'
         },
         {
             name: 'tickets',
-            description: '📋 Показать список активных тикетов (только для стаффа)'
+            description: 'Показать список активных тикетов (только для стаффа)'
         },
         {
             name: 'clearpanel',
-            description: '🗑️ Очистить все панели бота в канале (только для стаффа)'
+            description: 'Очистить все панели бота в канале (только для стаффа)'
         },
         {
             name: 'register',
-            description: '🔄 Перерегистрировать команды (только для стаффа)'
+            description: 'Перерегистрировать команды (только для стаффа)'
         }
     ];
 
@@ -129,16 +129,16 @@ async function createTicketPanel(channel) {
     const statusText = recruitmentOpen ? 'Набор открыт' : 'Набор закрыт';
     
     const embed = new EmbedBuilder()
-        .setTitle('🎫 Подача заявки в клан RUNA')
+        .setTitle('Подача заявки в клан RUNA')
         .setColor(recruitmentOpen ? '#00FF00' : '#FF0000')
         .addFields(
             { 
-                name: '📋 Требования:', 
-                value: `• Минимальный онлайн: ${CONFIG.MIN_HOURS} часов\n• Минимальный возраст: ${CONFIG.MIN_AGE} лет\n• Онлайн в день: от ${CONFIG.MIN_ONLINE} часов`, 
+                name: 'Требования', 
+                value: `Минимальный онлайн: ${CONFIG.MIN_HOURS} часов\nМинимальный возраст: ${CONFIG.MIN_AGE} лет\nОнлайн в день: от ${CONFIG.MIN_ONLINE} часов`, 
                 inline: false 
             },
             { 
-                name: `${statusEmoji} Статус набора:`, 
+                name: `${statusEmoji} Статус набора`, 
                 value: statusText, 
                 inline: false 
             }
@@ -150,16 +150,15 @@ async function createTicketPanel(channel) {
         .addComponents(
             new ButtonBuilder()
                 .setCustomId('create_ticket')
-                .setLabel('📩 Подать заявку')
+                .setLabel('Подать заявку')
                 .setStyle(ButtonStyle.Primary)
                 .setDisabled(!recruitmentOpen),
             new ButtonBuilder()
                 .setCustomId('toggle_recruitment')
-                .setLabel(recruitmentOpen ? '🔒 Закрыть набор' : '🔓 Открыть набор')
+                .setLabel(recruitmentOpen ? 'Закрыть набор' : 'Открыть набор')
                 .setStyle(ButtonStyle.Secondary)
         );
 
-    // Удаляем старые панели
     try {
         const messages = await channel.messages.fetch({ limit: 30 });
         const botMessages = messages.filter(msg => 
@@ -170,9 +169,7 @@ async function createTicketPanel(channel) {
         for (const msg of botMessages.values()) {
             await msg.delete();
         }
-    } catch (error) {
-        // Игнорируем
-    }
+    } catch (error) {}
 
     await channel.send({ embeds: [embed], components: [row] });
     console.log(`📋 Панель тикетов создана в #${channel.name}`);
@@ -185,17 +182,17 @@ async function createStatusPanel(channel) {
     const activeTickets = tickets.filter(t => t.status === 'open').size;
     
     const embed = new EmbedBuilder()
-        .setTitle('📊 Статус клана RUNA')
+        .setTitle('Статус клана RUNA')
         .setColor(recruitmentOpen ? '#00FF00' : '#FF0000')
         .addFields(
             { name: `${statusEmoji} Набор в клан`, value: statusText, inline: false },
             { 
-                name: '📋 Требования:', 
-                value: `• Минимальный онлайн: ${CONFIG.MIN_HOURS} часов\n• Минимальный возраст: ${CONFIG.MIN_AGE} лет\n• Онлайн в день: от ${CONFIG.MIN_ONLINE} часов`, 
+                name: 'Требования', 
+                value: `Минимальный онлайн: ${CONFIG.MIN_HOURS} часов\nМинимальный возраст: ${CONFIG.MIN_AGE} лет\nОнлайн в день: от ${CONFIG.MIN_ONLINE} часов`, 
                 inline: false 
             },
-            { name: '👥 Активных тикетов', value: `${activeTickets}`, inline: true },
-            { name: '📝 Всего тикетов', value: `${tickets.size}`, inline: true }
+            { name: 'Активных тикетов', value: `${activeTickets}`, inline: true },
+            { name: 'Всего тикетов', value: `${tickets.size}`, inline: true }
         )
         .setTimestamp()
         .setFooter({ text: 'RUNA Clan • 2026' });
@@ -204,7 +201,7 @@ async function createStatusPanel(channel) {
         .addComponents(
             new ButtonBuilder()
                 .setCustomId('refresh_status')
-                .setLabel('🔄 Обновить')
+                .setLabel('Обновить')
                 .setStyle(ButtonStyle.Secondary)
         );
 
@@ -218,9 +215,7 @@ async function createStatusPanel(channel) {
         for (const msg of botMessages.values()) {
             await msg.delete();
         }
-    } catch (error) {
-        // Игнорируем
-    }
+    } catch (error) {}
 
     await channel.send({ embeds: [embed], components: [row] });
     console.log(`📊 Панель статуса создана в #${channel.name}`);
@@ -229,14 +224,13 @@ async function createStatusPanel(channel) {
 // ========== ПЕРЕКЛЮЧЕНИЕ НАБОРА ==========
 async function toggleRecruitment(interaction) {
     recruitmentOpen = !recruitmentOpen;
-    const status = recruitmentOpen ? '🟢 ОТКРЫТ' : '🔴 ЗАКРЫТ';
+    const status = recruitmentOpen ? 'открыт' : 'закрыт';
     
     await interaction.reply({
         content: `✅ Набор в клан теперь ${status}!`,
         ephemeral: true
     });
 
-    // Обновляем все панели тикетов
     const guild = interaction.guild;
     const channels = guild.channels.cache.filter(ch => 
         ch.type === ChannelType.GuildText && 
@@ -257,9 +251,7 @@ async function toggleRecruitment(interaction) {
                 await createTicketPanel(channel);
                 break;
             }
-        } catch (error) {
-            // Игнорируем
-        }
+        } catch (error) {}
     }
 }
 
@@ -270,17 +262,17 @@ async function showStatus(interaction) {
     const activeTickets = tickets.filter(t => t.status === 'open').size;
     
     const embed = new EmbedBuilder()
-        .setTitle('📊 Статус набора в RUNA')
+        .setTitle('Статус набора в RUNA')
         .setColor(recruitmentOpen ? '#00FF00' : '#FF0000')
         .addFields(
             { name: `${statusEmoji} Набор в клан`, value: statusText, inline: false },
             { 
-                name: '📋 Требования:', 
-                value: `• Минимальный онлайн: ${CONFIG.MIN_HOURS} часов\n• Минимальный возраст: ${CONFIG.MIN_AGE} лет\n• Онлайн в день: от ${CONFIG.MIN_ONLINE} часов`, 
+                name: 'Требования', 
+                value: `Минимальный онлайн: ${CONFIG.MIN_HOURS} часов\nМинимальный возраст: ${CONFIG.MIN_AGE} лет\nОнлайн в день: от ${CONFIG.MIN_ONLINE} часов`, 
                 inline: false 
             },
-            { name: '👥 Активных тикетов:', value: `${activeTickets}`, inline: true },
-            { name: '📝 Всего тикетов:', value: `${tickets.size}`, inline: true }
+            { name: 'Активных тикетов', value: `${activeTickets}`, inline: true },
+            { name: 'Всего тикетов', value: `${tickets.size}`, inline: true }
         )
         .setTimestamp()
         .setFooter({ text: 'RUNA Clan • 2026' });
@@ -294,13 +286,13 @@ async function showTicketsList(interaction) {
     
     if (openTickets.size === 0) {
         return interaction.reply({
-            content: '📭 Активных тикетов нет.',
+            content: 'Активных тикетов нет.',
             ephemeral: true
         });
     }
 
     const embed = new EmbedBuilder()
-        .setTitle('📋 Список активных тикетов')
+        .setTitle('Список активных тикетов')
         .setColor('#0099FF')
         .setDescription(`Всего активных тикетов: ${openTickets.size}`)
         .setTimestamp();
@@ -331,7 +323,7 @@ async function clearPanels(interaction) {
 
         if (botMessages.size === 0) {
             return interaction.reply({
-                content: '📭 В этом канале нет панелей бота.',
+                content: 'В этом канале нет панелей бота.',
                 ephemeral: true
             });
         }
@@ -363,7 +355,6 @@ client.on('interactionCreate', async interaction => {
     const { commandName, options } = interaction;
     const isStaff = interaction.member.roles.cache.has(CONFIG.STAFF_ROLE);
 
-    // /register
     if (commandName === 'register') {
         if (!isStaff) {
             return interaction.reply({ 
@@ -390,7 +381,6 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // /panel
     if (commandName === 'panel') {
         if (!isStaff) {
             return interaction.reply({ 
@@ -417,7 +407,6 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // /recruitment
     if (commandName === 'recruitment') {
         if (!isStaff) {
             return interaction.reply({ 
@@ -428,12 +417,10 @@ client.on('interactionCreate', async interaction => {
         await toggleRecruitment(interaction);
     }
 
-    // /status
     if (commandName === 'status') {
         await showStatus(interaction);
     }
 
-    // /tickets
     if (commandName === 'tickets') {
         if (!isStaff) {
             return interaction.reply({ 
@@ -444,7 +431,6 @@ client.on('interactionCreate', async interaction => {
         await showTicketsList(interaction);
     }
 
-    // /clearpanel
     if (commandName === 'clearpanel') {
         if (!isStaff) {
             return interaction.reply({ 
@@ -460,7 +446,6 @@ client.on('interactionCreate', async interaction => {
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
 
-    // Кнопка создания тикета
     if (interaction.customId === 'create_ticket') {
         if (!recruitmentOpen) {
             return interaction.reply({ 
@@ -479,41 +464,41 @@ client.on('interactionCreate', async interaction => {
 
         const modal = new ModalBuilder()
             .setCustomId('ticket_modal')
-            .setTitle('📝 Заявка в RUNA');
+            .setTitle('Заявка в RUNA');
 
         const hoursInput = new TextInputBuilder()
             .setCustomId('hours')
-            .setLabel('1. Сколько часов в игре?')
+            .setLabel('Сколько часов в игре?')
             .setStyle(TextInputStyle.Short)
             .setPlaceholder('Пример: 3500')
             .setRequired(true);
 
         const ageInput = new TextInputBuilder()
             .setCustomId('age')
-            .setLabel('2. Сколько вам лет?')
+            .setLabel('Сколько вам лет?')
             .setStyle(TextInputStyle.Short)
             .setPlaceholder('Пример: 18')
             .setRequired(true);
 
         const onlineInput = new TextInputBuilder()
             .setCustomId('online')
-            .setLabel('3. Часов в день / Часовой пояс')
+            .setLabel('Часов в день / Часовой пояс')
             .setStyle(TextInputStyle.Short)
             .setPlaceholder('Пример: 8ч / UTC+3')
             .setRequired(true);
 
         const callInput = new TextInputBuilder()
             .setCustomId('call')
-            .setLabel('4. Умение слушать колл (1-10)')
+            .setLabel('Умение слушать колл (1-10)')
             .setStyle(TextInputStyle.Short)
             .setPlaceholder('Пример: 7')
             .setRequired(true);
 
         const roleInput = new TextInputBuilder()
             .setCustomId('role')
-            .setLabel('5. Ваша роль')
+            .setLabel('Ваша роль')
             .setStyle(TextInputStyle.Short)
-            .setPlaceholder('Введите любую роль')
+            .setPlaceholder('Введите роль')
             .setRequired(true);
 
         modal.addComponents(
@@ -527,7 +512,6 @@ client.on('interactionCreate', async interaction => {
         await interaction.showModal(modal);
     }
 
-    // Кнопка переключения набора
     if (interaction.customId === 'toggle_recruitment') {
         const member = await interaction.guild.members.fetch(interaction.user.id);
         if (!member.roles.cache.has(CONFIG.STAFF_ROLE)) {
@@ -539,24 +523,23 @@ client.on('interactionCreate', async interaction => {
         await toggleRecruitment(interaction);
     }
 
-    // Кнопка обновления статуса
     if (interaction.customId === 'refresh_status') {
         const statusEmoji = recruitmentOpen ? '🟢' : '🔴';
         const statusText = recruitmentOpen ? 'Набор открыт' : 'Набор закрыт';
         const activeTickets = tickets.filter(t => t.status === 'open').size;
         
         const embed = new EmbedBuilder()
-            .setTitle('📊 Статус клана RUNA')
+            .setTitle('Статус клана RUNA')
             .setColor(recruitmentOpen ? '#00FF00' : '#FF0000')
             .addFields(
                 { name: `${statusEmoji} Набор в клан`, value: statusText, inline: false },
                 { 
-                    name: '📋 Требования:', 
-                    value: `• Минимальный онлайн: ${CONFIG.MIN_HOURS} часов\n• Минимальный возраст: ${CONFIG.MIN_AGE} лет\n• Онлайн в день: от ${CONFIG.MIN_ONLINE} часов`, 
+                    name: 'Требования', 
+                    value: `Минимальный онлайн: ${CONFIG.MIN_HOURS} часов\nМинимальный возраст: ${CONFIG.MIN_AGE} лет\nОнлайн в день: от ${CONFIG.MIN_ONLINE} часов`, 
                     inline: false 
                 },
-                { name: '👥 Активных тикетов', value: `${activeTickets}`, inline: true },
-                { name: '📝 Всего тикетов', value: `${tickets.size}`, inline: true }
+                { name: 'Активных тикетов', value: `${activeTickets}`, inline: true },
+                { name: 'Всего тикетов', value: `${tickets.size}`, inline: true }
             )
             .setTimestamp()
             .setFooter({ text: 'RUNA Clan • 2026' });
@@ -564,7 +547,6 @@ client.on('interactionCreate', async interaction => {
         await interaction.update({ embeds: [embed] });
     }
 
-    // Кнопки управления тикетом
     if (['accept_ticket', 'call_ticket', 'close_ticket', 'delete_ticket'].includes(interaction.customId)) {
         await handleTicketAction(interaction);
     }
@@ -583,7 +565,6 @@ client.on('interactionCreate', async interaction => {
     const call = parseInt(interaction.fields.getTextInputValue('call'));
     const role = interaction.fields.getTextInputValue('role');
 
-    // Валидация
     if (hours < CONFIG.MIN_HOURS) {
         return interaction.editReply({
             content: `❌ Отклонено! Минимальный онлайн: ${CONFIG.MIN_HOURS} часов. У вас: ${hours}.`
@@ -602,7 +583,6 @@ client.on('interactionCreate', async interaction => {
         });
     }
 
-    // СОЗДАЕМ ТИКЕТ
     const guild = interaction.guild;
     const category = CONFIG.TICKET_CATEGORY ? guild.channels.cache.get(CONFIG.TICKET_CATEGORY) : null;
     
@@ -635,17 +615,18 @@ client.on('interactionCreate', async interaction => {
             data: { hours, age, online, call, role }
         });
 
+        // ========== ОСНОВНОЙ EMBED ТИКЕТА ==========
         const embed = new EmbedBuilder()
-            .setTitle('📋 Новая заявка в RUNA')
+            .setTitle('Новая заявка в RUNA')
             .setColor('#00FF00')
             .setDescription(`Заявка от ${interaction.user}`)
             .addFields(
-                { name: '👤 Пользователь', value: `${interaction.user}`, inline: false },
-                { name: '⏰ Часов в игре', value: `${hours} ч`, inline: true },
-                { name: '📅 Возраст', value: `${age} лет`, inline: true },
-                { name: '🕐 Онлайн/Часовой пояс', value: online, inline: false },
-                { name: '🎧 Умение слушать колл', value: `${call}/10`, inline: true },
-                { name: '⚔️ Роль', value: role, inline: true }
+                { name: 'Пользователь', value: `${interaction.user}`, inline: false },
+                { name: 'Часов в игре', value: `${hours} ч`, inline: false },
+                { name: 'Возраст', value: `${age} лет`, inline: false },
+                { name: 'Онлайн/Часовой пояс', value: online, inline: false },
+                { name: 'Умение слушать колл', value: `${call}/10`, inline: false },
+                { name: 'Роль', value: role, inline: false }
             )
             .setFooter({ text: `Создан: ${new Date().toLocaleString()}` })
             .setTimestamp();
@@ -654,19 +635,19 @@ client.on('interactionCreate', async interaction => {
             .addComponents(
                 new ButtonBuilder()
                     .setCustomId('accept_ticket')
-                    .setLabel('✅ Принять')
+                    .setLabel('Принять')
                     .setStyle(ButtonStyle.Success),
                 new ButtonBuilder()
                     .setCustomId('call_ticket')
-                    .setLabel('📞 Вызвать на обзвон')
+                    .setLabel('Вызвать на обзвон')
                     .setStyle(ButtonStyle.Primary),
                 new ButtonBuilder()
                     .setCustomId('close_ticket')
-                    .setLabel('🔒 Закрыть')
+                    .setLabel('Закрыть')
                     .setStyle(ButtonStyle.Secondary),
                 new ButtonBuilder()
                     .setCustomId('delete_ticket')
-                    .setLabel('🗑️ Удалить')
+                    .setLabel('Удалить')
                     .setStyle(ButtonStyle.Danger)
             );
 
@@ -676,20 +657,21 @@ client.on('interactionCreate', async interaction => {
             components: [row] 
         });
 
-        // Логирование
+        // ========== КОМПАКТНЫЕ ЛОГИ ==========
         if (CONFIG.LOG_CHANNEL) {
             const logChannel = guild.channels.cache.get(CONFIG.LOG_CHANNEL);
             if (logChannel) {
                 const logEmbed = new EmbedBuilder()
-                    .setTitle('📝 Новый тикет')
                     .setColor('#FFA500')
-                    .addFields(
-                        { name: 'Пользователь', value: `${interaction.user}`, inline: true },
-                        { name: 'Канал', value: `<#${channel.id}>`, inline: true }
+                    .setDescription(
+                        `**Тег:** ${interaction.user}\n` +
+                        `**Часы:** ${hours}\n` +
+                        `**Возраст:** ${age}`
                     )
                     .setTimestamp();
-                
+
                 await logChannel.send({ embeds: [logEmbed] });
+                console.log(`📝 Лог: ${interaction.user.tag} | ${hours}ч | ${age}л`);
             }
         }
 
@@ -776,7 +758,7 @@ async function handleTicketAction(interaction) {
 
         case 'close_ticket': {
             const embed = new EmbedBuilder()
-                .setTitle('🔒 Тикет закрыт')
+                .setTitle('Тикет закрыт')
                 .setDescription('Тикет может быть открыт снова.')
                 .setColor('#FF0000')
                 .setTimestamp();
