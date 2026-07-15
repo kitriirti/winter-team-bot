@@ -1,11 +1,56 @@
-require('dotenv').config();
+// Загружаем .env вручную (Render Secret Files)
+const fs = require('fs');
+const path = require('path');
+
+try {
+    const secretPath = '/etc/secrets/.env';
+    if (fs.existsSync(secretPath)) {
+        const envContent = fs.readFileSync(secretPath, 'utf-8');
+        envContent.split('\n').forEach(line => {
+            const trimmed = line.trim();
+            if (trimmed && !trimmed.startsWith('#')) {
+                const eqIndex = trimmed.indexOf('=');
+                if (eqIndex > 0) {
+                    const key = trimmed.substring(0, eqIndex).trim();
+                    const value = trimmed.substring(eqIndex + 1).trim();
+                    if (key && value) process.env[key] = value;
+                }
+            }
+        });
+        console.log('✅ Загружен .env из /etc/secrets/.env');
+    }
+} catch (e) {
+    console.error('❌ Ошибка загрузки /etc/secrets/.env:', e.message);
+}
+
+try {
+    const localPath = path.join(__dirname, '.env');
+    if (fs.existsSync(localPath)) {
+        const envContent = fs.readFileSync(localPath, 'utf-8');
+        envContent.split('\n').forEach(line => {
+            const trimmed = line.trim();
+            if (trimmed && !trimmed.startsWith('#')) {
+                const eqIndex = trimmed.indexOf('=');
+                if (eqIndex > 0) {
+                    const key = trimmed.substring(0, eqIndex).trim();
+                    const value = trimmed.substring(eqIndex + 1).trim();
+                    if (key && value && !process.env[key]) {
+                        process.env[key] = value;
+                    }
+                }
+            }
+        });
+        console.log('✅ Загружен .env из корня');
+    }
+} catch (e) {
+    console.error('❌ Ошибка загрузки .env:', e.message);
+}
+
 const {
     Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder,
     ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle,
     PermissionFlagsBits, ChannelType, REST, Routes
 } = require('discord.js');
-const fs = require('fs');
-const path = require('path');
 
 // ============================================================
 // ЗАЩИТА
@@ -42,7 +87,6 @@ function save(f, d) {
 }
 
 if (!fs.existsSync(path.join(DIR, 'events.json'))) save('events.json', {});
-if (!fs.existsSync(path.join(DIR, 'reminders.json'))) save('reminders.json', []);
 if (!fs.existsSync(path.join(DIR, 'afk.json'))) save('afk.json', {});
 if (!fs.existsSync(path.join(DIR, 'cfg.json'))) save('cfg.json', {});
 
@@ -50,16 +94,9 @@ if (!fs.existsSync(path.join(DIR, 'cfg.json'))) save('cfg.json', {});
 // УТИЛИТЫ
 // ============================================================
 const env = (k, fb = '') => {
-    // Сначала пробуем process.env, потом /etc/secrets/.env
-    if (process.env[k]) return process.env[k];
-    try {
-        const secretsPath = '/etc/secrets/.env';
-        if (fs.existsSync(secretsPath)) {
-            const content = fs.readFileSync(secretsPath, 'utf-8');
-            const match = content.match(new RegExp(`^${k}=(.+)$`, 'm'));
-            if (match) return match[1].trim();
-        }
-    } catch (e) {}
+    const val = process.env[k];
+    if (val) return val;
+    console.log(`⚠️ Переменная ${k} не найдена!`);
     return fb;
 };
 
@@ -143,7 +180,16 @@ async function newApply(interaction) {
     try {
         const g = interaction.guild;
         const cat = env('APPLY_CATEGORY_ID');
-        if (!cat) return interaction.reply({ content: '❌ APPLY_CATEGORY_ID не настроен.', ephemeral: true });
+        
+        // Отладка
+        console.log('🔍 DEBUG newApply:');
+        console.log('  APPLY_CATEGORY_ID из env:', cat);
+        console.log('  BOT_TOKEN есть:', !!env('BOT_TOKEN'));
+        console.log('  COMMUNITY_GUILD_ID:', env('COMMUNITY_GUILD_ID'));
+        
+        if (!cat || cat === '') {
+            return interaction.reply({ content: '❌ Категория заявок не настроена. Проверь переменную APPLY_CATEGORY_ID в настройках Render.', ephemeral: true });
+        }
 
         const sn = interaction.user.username.toLowerCase().replace(/[^a-z0-9\-_]/g, '');
         if (g.channels.cache.find(c => c.name === `заявка-${sn}` && c.parentId === cat)) {
@@ -175,7 +221,7 @@ async function newApply(interaction) {
         await interaction.reply({ content: `✅ ${ch}`, ephemeral: true });
     } catch (e) {
         console.error('❌ newApply:', e.message);
-        try { await interaction.reply({ content: '❌ Ошибка.', ephemeral: true }); } catch {}
+        try { await interaction.reply({ content: '❌ Ошибка: ' + e.message, ephemeral: true }); } catch {}
     }
 }
 
@@ -337,8 +383,16 @@ async function ret(interaction, uid) {
 // ============================================================
 client.once('ready', async () => {
     console.log(`✅ ${client.user.tag} | Серверов: ${client.guilds.cache.size}`);
-    console.log('🔍 ПРОВЕРКА ПЕРЕМЕННЫХ:');
-    ['BOT_TOKEN','CLIENT_ID','COMMUNITY_GUILD_ID','COMMUNITY_ADMIN_ROLE_ID','APPLY_STAFF_ROLE_ID','APPLY_CATEGORY_ID','LOG_CHANNEL_ID','PRIVATE_GUILD_ID','PRIVATE_ADMIN_ROLE_ID'].forEach(k => console.log(`  ${k}: ${env(k) ? '✅' : '❌'}`));
+    console.log('🔍 ПЕРЕМЕННЫЕ:');
+    console.log('  BOT_TOKEN:', env('BOT_TOKEN') ? '✅' : '❌');
+    console.log('  CLIENT_ID:', env('CLIENT_ID') ? '✅' : '❌');
+    console.log('  COMMUNITY_GUILD_ID:', env('COMMUNITY_GUILD_ID') ? '✅' : '❌');
+    console.log('  COMMUNITY_ADMIN_ROLE_ID:', env('COMMUNITY_ADMIN_ROLE_ID') ? '✅' : '❌');
+    console.log('  APPLY_STAFF_ROLE_ID:', env('APPLY_STAFF_ROLE_ID') ? '✅' : '❌');
+    console.log('  APPLY_CATEGORY_ID:', `"${env('APPLY_CATEGORY_ID')}"`);
+    console.log('  LOG_CHANNEL_ID:', env('LOG_CHANNEL_ID') ? '✅' : '❌');
+    console.log('  PRIVATE_GUILD_ID:', env('PRIVATE_GUILD_ID') ? '✅' : '❌');
+    console.log('  PRIVATE_ADMIN_ROLE_ID:', env('PRIVATE_ADMIN_ROLE_ID') ? '✅' : '❌');
     await reg();
     setInterval(() => {
         try {
@@ -353,14 +407,11 @@ client.once('ready', async () => {
 });
 
 // ============================================================
-// ИВЕНТЫ
+// ОБРАБОТКА
 // ============================================================
 const gEv = () => { const d = load('events.json'); return (d && typeof d === 'object') ? d : {}; };
 const sEv = (d) => { if (d) save('events.json', d); };
 
-// ============================================================
-// ОБРАБОТКА
-// ============================================================
 client.on('interactionCreate', async (i) => {
     try {
         if (i.isChatInputCommand()) {
@@ -369,8 +420,8 @@ client.on('interactionCreate', async (i) => {
             if (c === 'setup') {
                 if (!isAdmin(i.member)) return i.reply({ content: '⛔', ephemeral: true });
                 const s = i.options.getSubcommand();
-                if (s === 'apply') { await panelApply(i.channel); await i.reply({ content: '✅', ephemeral: true }); }
-                if (s === 'afk') { await panelAfk(i.channel); await i.reply({ content: '✅', ephemeral: true }); }
+                if (s === 'apply') { await panelApply(i.channel); await i.reply({ content: '✅ Панель заявок создана!', ephemeral: true }); }
+                if (s === 'afk') { await panelAfk(i.channel); await i.reply({ content: '✅ Панель отпусков создана!', ephemeral: true }); }
                 return;
             }
 
