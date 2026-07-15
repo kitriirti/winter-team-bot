@@ -125,12 +125,12 @@ async function registerCommands() {
 
 // ========== СОЗДАНИЕ ПАНЕЛИ ТИКЕТОВ ==========
 async function createTicketPanel(channel) {
-    const status = recruitmentOpen ? '🔓 **ОТКРЫТ**' : '🔒 **ЗАКРЫТ**';
+    const statusEmoji = recruitmentOpen ? '🟢' : '🔴';
+    const statusText = recruitmentOpen ? 'Набор открыт' : 'Набор закрыт';
     
     const embed = new EmbedBuilder()
-        .setTitle('🎫 Создание тикета в клан RUNA')
-        .setDescription('Нажмите кнопку ниже, чтобы подать заявку на вступление в клан.')
-        .setColor('#FF6B00')
+        .setTitle('🎫 Подача заявки в клан RUNA')
+        .setColor(recruitmentOpen ? '#00FF00' : '#FF0000')
         .addFields(
             { 
                 name: '📋 Требования:', 
@@ -138,13 +138,8 @@ async function createTicketPanel(channel) {
                 inline: false 
             },
             { 
-                name: '📌 Статус набора:', 
-                value: status, 
-                inline: false 
-            },
-            { 
-                name: '📌 Важно:', 
-                value: 'Заполните все поля анкеты. Неверные данные приведут к автоматическому отклонению.', 
+                name: `${statusEmoji} Статус набора:`, 
+                value: statusText, 
                 inline: false 
             }
         )
@@ -170,7 +165,7 @@ async function createTicketPanel(channel) {
         const botMessages = messages.filter(msg => 
             msg.author.id === client.user.id && 
             msg.embeds.length > 0 && 
-            msg.embeds[0].title?.includes('Создание тикета')
+            msg.embeds[0].title?.includes('Подача заявки')
         );
         for (const msg of botMessages.values()) {
             await msg.delete();
@@ -185,15 +180,15 @@ async function createTicketPanel(channel) {
 
 // ========== СОЗДАНИЕ ПАНЕЛИ СТАТУСА ==========
 async function createStatusPanel(channel) {
-    const status = recruitmentOpen ? '🔓 ОТКРЫТ' : '🔒 ЗАКРЫТ';
+    const statusEmoji = recruitmentOpen ? '🟢' : '🔴';
+    const statusText = recruitmentOpen ? 'Набор открыт' : 'Набор закрыт';
     const activeTickets = tickets.filter(t => t.status === 'open').size;
     
     const embed = new EmbedBuilder()
         .setTitle('📊 Статус клана RUNA')
-        .setDescription('Актуальная информация о клане')
         .setColor(recruitmentOpen ? '#00FF00' : '#FF0000')
         .addFields(
-            { name: '🎯 Набор в клан', value: `**${status}**`, inline: false },
+            { name: `${statusEmoji} Набор в клан`, value: statusText, inline: false },
             { 
                 name: '📋 Требования:', 
                 value: `• Минимальный онлайн: ${CONFIG.MIN_HOURS} часов\n• Минимальный возраст: ${CONFIG.MIN_AGE} лет\n• Онлайн в день: от ${CONFIG.MIN_ONLINE} часов`, 
@@ -234,7 +229,7 @@ async function createStatusPanel(channel) {
 // ========== ПЕРЕКЛЮЧЕНИЕ НАБОРА ==========
 async function toggleRecruitment(interaction) {
     recruitmentOpen = !recruitmentOpen;
-    const status = recruitmentOpen ? '🔓 ОТКРЫТ' : '🔒 ЗАКРЫТ';
+    const status = recruitmentOpen ? '🟢 ОТКРЫТ' : '🔴 ЗАКРЫТ';
     
     await interaction.reply({
         content: `✅ Набор в клан теперь ${status}!`,
@@ -254,7 +249,7 @@ async function toggleRecruitment(interaction) {
             const botMessages = messages.filter(msg => 
                 msg.author.id === client.user.id && 
                 msg.embeds.length > 0 && 
-                msg.embeds[0].title?.includes('Создание тикета')
+                msg.embeds[0].title?.includes('Подача заявки')
             );
             
             for (const msg of botMessages.values()) {
@@ -270,14 +265,15 @@ async function toggleRecruitment(interaction) {
 
 // ========== ПОКАЗ СТАТУСА ==========
 async function showStatus(interaction) {
-    const status = recruitmentOpen ? '🔓 ОТКРЫТ' : '🔒 ЗАКРЫТ';
+    const statusEmoji = recruitmentOpen ? '🟢' : '🔴';
+    const statusText = recruitmentOpen ? 'Набор открыт' : 'Набор закрыт';
     const activeTickets = tickets.filter(t => t.status === 'open').size;
     
     const embed = new EmbedBuilder()
         .setTitle('📊 Статус набора в RUNA')
-        .setDescription(`Набор в клан: **${status}**`)
         .setColor(recruitmentOpen ? '#00FF00' : '#FF0000')
         .addFields(
+            { name: `${statusEmoji} Набор в клан`, value: statusText, inline: false },
             { 
                 name: '📋 Требования:', 
                 value: `• Минимальный онлайн: ${CONFIG.MIN_HOURS} часов\n• Минимальный возраст: ${CONFIG.MIN_AGE} лет\n• Онлайн в день: от ${CONFIG.MIN_ONLINE} часов`, 
@@ -329,7 +325,7 @@ async function clearPanels(interaction) {
         const botMessages = messages.filter(msg => 
             msg.author.id === client.user.id && 
             msg.embeds.length > 0 && 
-            (msg.embeds[0].title?.includes('Создание тикета') || 
+            (msg.embeds[0].title?.includes('Подача заявки') || 
              msg.embeds[0].title?.includes('Статус клана'))
         );
 
@@ -515,9 +511,9 @@ client.on('interactionCreate', async interaction => {
 
         const roleInput = new TextInputBuilder()
             .setCustomId('role')
-            .setLabel('5. Роль (Комбат/Билдер/Электрик/Фермер)')
+            .setLabel('5. Ваша роль')
             .setStyle(TextInputStyle.Short)
-            .setPlaceholder('Пример: Комбат')
+            .setPlaceholder('Введите любую роль')
             .setRequired(true);
 
         modal.addComponents(
@@ -545,15 +541,15 @@ client.on('interactionCreate', async interaction => {
 
     // Кнопка обновления статуса
     if (interaction.customId === 'refresh_status') {
-        const status = recruitmentOpen ? '🔓 ОТКРЫТ' : '🔒 ЗАКРЫТ';
+        const statusEmoji = recruitmentOpen ? '🟢' : '🔴';
+        const statusText = recruitmentOpen ? 'Набор открыт' : 'Набор закрыт';
         const activeTickets = tickets.filter(t => t.status === 'open').size;
         
         const embed = new EmbedBuilder()
             .setTitle('📊 Статус клана RUNA')
-            .setDescription('Актуальная информация о клане')
             .setColor(recruitmentOpen ? '#00FF00' : '#FF0000')
             .addFields(
-                { name: '🎯 Набор в клан', value: `**${status}**`, inline: false },
+                { name: `${statusEmoji} Набор в клан`, value: statusText, inline: false },
                 { 
                     name: '📋 Требования:', 
                     value: `• Минимальный онлайн: ${CONFIG.MIN_HOURS} часов\n• Минимальный возраст: ${CONFIG.MIN_AGE} лет\n• Онлайн в день: от ${CONFIG.MIN_ONLINE} часов`, 
@@ -585,7 +581,7 @@ client.on('interactionCreate', async interaction => {
     const age = parseInt(interaction.fields.getTextInputValue('age'));
     const online = interaction.fields.getTextInputValue('online');
     const call = parseInt(interaction.fields.getTextInputValue('call'));
-    const role = interaction.fields.getTextInputValue('role').toLowerCase();
+    const role = interaction.fields.getTextInputValue('role');
 
     // Валидация
     if (hours < CONFIG.MIN_HOURS) {
@@ -603,13 +599,6 @@ client.on('interactionCreate', async interaction => {
     if (call < 1 || call > 10) {
         return interaction.editReply({
             content: '❌ Оценка должна быть от 1 до 10!'
-        });
-    }
-
-    const validRoles = ['комбат', 'билдер', 'электрик', 'фермер'];
-    if (!validRoles.includes(role)) {
-        return interaction.editReply({
-            content: '❌ Неверная роль! Доступны: Комбат, Билдер, Электрик, Фермер'
         });
     }
 
@@ -656,7 +645,7 @@ client.on('interactionCreate', async interaction => {
                 { name: '📅 Возраст', value: `${age} лет`, inline: true },
                 { name: '🕐 Онлайн/Часовой пояс', value: online, inline: false },
                 { name: '🎧 Умение слушать колл', value: `${call}/10`, inline: true },
-                { name: '⚔️ Роль', value: role.charAt(0).toUpperCase() + role.slice(1), inline: true }
+                { name: '⚔️ Роль', value: role, inline: true }
             )
             .setFooter({ text: `Создан: ${new Date().toLocaleString()}` })
             .setTimestamp();
@@ -853,7 +842,6 @@ client.once('ready', async () => {
 
     console.log('🎫 Бот готов!');
     console.log('📋 Команды: /panel ticket, /panel status, /recruitment, /status, /tickets, /clearpanel, /register');
-    console.log('⚠️ Бот НЕ создает каналы автоматически!');
 });
 
 // ========== ОБРАБОТКА ОШИБОК ==========
