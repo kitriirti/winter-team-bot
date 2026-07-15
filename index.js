@@ -55,6 +55,20 @@ function getEnv(k, fb = '') { try { return process.env[k] || fb; } catch { retur
 function safeNum(v, fb = 0) { try { const n = parseInt(v); return isNaN(n) ? fb : n; } catch { return fb; } }
 
 // ============================================================
+//                    ПРОВЕРКА ПРАВ (АДМИН ИЛИ СТАФФ)
+// ============================================================
+function isAdminOrStaff(member) {
+    const adminRole = getEnv('COMMUNITY_ADMIN_ROLE_ID');
+    const staffRole = getEnv('APPLY_STAFF_ROLE_ID');
+    return member.roles.cache.has(adminRole) || member.roles.cache.has(staffRole);
+}
+
+function isAdmin(member) {
+    const adminRole = getEnv('COMMUNITY_ADMIN_ROLE_ID');
+    return member.roles.cache.has(adminRole);
+}
+
+// ============================================================
 //                    РЕГИСТРАЦИЯ КОМАНД
 // ============================================================
 const commands = [
@@ -120,19 +134,19 @@ async function registerCommands() {
 }
 
 // ============================================================
-//                        СИСТЕМА ЗАЯВОК (ТИКЕТЫ В КЛАН)
+//                        СИСТЕМА ЗАЯВОК
 // ============================================================
 async function createApplyTicket(interaction) {
     try {
         const guild = interaction.guild;
         if (!guild) return interaction.reply({ content: '❌ Сервер не найден.', ephemeral: true });
 
-        // Берём категорию из канала где была нажата кнопка (или команда)
         const channel = interaction.channel;
         const parentId = channel.parentId;
         if (!parentId) return interaction.reply({ content: '❌ Канал не в категории.', ephemeral: true });
 
-        const staffRoleId = getEnv('PRIVATE_ADMIN_ROLE_ID');
+        const staffRoleId = getEnv('APPLY_STAFF_ROLE_ID');
+        const adminRoleId = getEnv('COMMUNITY_ADMIN_ROLE_ID');
         const safeName = interaction.user.username.toLowerCase().replace(/[^a-z0-9\-_]/g, '');
 
         const exists = guild.channels.cache.find(c => c.name === `заявка-${safeName}` && c.parentId === parentId);
@@ -145,7 +159,8 @@ async function createApplyTicket(interaction) {
             permissionOverwrites: [
                 { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
                 { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-                { id: staffRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+                { id: staffRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageMessages] },
+                { id: adminRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageMessages] },
             ],
         });
 
@@ -160,9 +175,9 @@ async function createApplyTicket(interaction) {
             new ButtonBuilder().setCustomId(`apply_deny_${interaction.user.id}`).setLabel('❌ Отклонить').setStyle(ButtonStyle.Danger),
         );
 
-        await ticketChannel.send({ content: `||${interaction.user}|| <@&${staffRoleId}>`, embeds: [embed], components: [btns] });
+        await ticketChannel.send({ content: `||${interaction.user}|| <@&${staffRoleId}> <@&${adminRoleId}>`, embeds: [embed], components: [btns] });
 
-        await sendLog(getEnv('COMMUNITY_GUILD_ID'), 'apply', { userId: interaction.user.id, hours: '-', age: '-', dailyHours: '-', role: '-', listenSkill: '-' });
+        await sendLog(getEnv('COMMUNITY_GUILD_ID'), 'apply', { userId: interaction.user.id });
         await interaction.reply({ content: `✅ Заявка создана: ${ticketChannel}`, ephemeral: true });
     } catch (e) {
         console.error('❌', e.message);
@@ -170,37 +185,43 @@ async function createApplyTicket(interaction) {
     }
 }
 
+// Принять заявку (может админ И стафф)
 async function acceptApply(interaction, userId) {
     try {
-        const adminRole = getEnv('PRIVATE_ADMIN_ROLE_ID');
-        if (!interaction.member.roles.cache.has(adminRole)) return interaction.reply({ content: '⛔ Нет прав.', ephemeral: true });
+        if (!isAdminOrStaff(interaction.member)) return interaction.reply({ content: '⛔ Нет прав.', ephemeral: true });
 
         const guild = client.guilds.cache.get(getEnv('PRIVATE_GUILD_ID'));
+        if (!guild) return interaction.reply({ content: '❌ Приватный сервер не найден.', ephemeral: true });
+
         const invCh = guild.channels.cache.find(c => c.type === 0);
+        if (!invCh) return interaction.reply({ content: '❌ Нет текстовых каналов.', ephemeral: true });
+
         const invite = await invCh.createInvite({ maxUses: 1, maxAge: 86400, unique: true });
 
         const user = await client.users.fetch(userId);
         await user.send(`🎉 **Твоя заявка в клан RUNA одобрена!**\nПриглашение: ${invite.url}\n⚠️ Одноразовое, 24 часа.`).catch(() => {});
 
-        await interaction.channel.send(`✅ Заявка одобрена! Приглашение отправлено.`);
+        await interaction.channel.send(`✅ Заявка одобрена пользователем ${interaction.user}! Приглашение отправлено в ЛС.`);
         await interaction.update({ content: `✅ Одобрено ${interaction.user}`, components: [], embeds: [] }).catch(() => {});
     } catch (e) {
         console.error('❌', e.message);
+        try { await interaction.reply({ content: '❌ Ошибка.', ephemeral: true }); } catch {}
     }
 }
 
+// Отклонить заявку (может админ И стафф)
 async function denyApply(interaction, userId) {
     try {
-        const adminRole = getEnv('PRIVATE_ADMIN_ROLE_ID');
-        if (!interaction.member.roles.cache.has(adminRole)) return interaction.reply({ content: '⛔ Нет прав.', ephemeral: true });
+        if (!isAdminOrStaff(interaction.member)) return interaction.reply({ content: '⛔ Нет прав.', ephemeral: true });
 
         const user = await client.users.fetch(userId);
         await user.send('❌ **Твоя заявка в клан RUNA отклонена.**').catch(() => {});
 
-        await interaction.channel.send(`❌ Заявка отклонена.`);
+        await interaction.channel.send(`❌ Заявка отклонена пользователем ${interaction.user}.`);
         await interaction.update({ content: `❌ Отклонено ${interaction.user}`, components: [], embeds: [] }).catch(() => {});
     } catch (e) {
         console.error('❌', e.message);
+        try { await interaction.reply({ content: '❌ Ошибка.', ephemeral: true }); } catch {}
     }
 }
 
@@ -209,7 +230,6 @@ async function denyApply(interaction, userId) {
 // ============================================================
 async function setupPanels(channel) {
     try {
-        // 1. Панель заявок
         const applyEmbed = new EmbedBuilder()
             .setTitle('📋 ПОДАТЬ ЗАЯВКУ В КЛАН RUNA')
             .setDescription(
@@ -227,7 +247,6 @@ async function setupPanels(channel) {
 
         const applyMsg = await channel.send({ embeds: [applyEmbed], components: [applyBtns] });
 
-        // 2. Панель отпусков (всегда снизу)
         const afkEmbed = new EmbedBuilder()
             .setTitle('🏖️ ОТПУСК / ОТСУТСТВИЕ')
             .setDescription(
@@ -246,7 +265,6 @@ async function setupPanels(channel) {
 
         const afkMsg = await channel.send({ embeds: [afkEmbed], components: [afkBtns] });
 
-        // Сохраняем ID сообщений чтобы обновлять при новых заявках
         const config = readJSON('config.json') || {};
         config.applyMessageId = applyMsg.id;
         config.afkMessageId = afkMsg.id;
@@ -258,7 +276,6 @@ async function setupPanels(channel) {
     }
 }
 
-// Перемещает панель отпусков вниз
 async function moveAfkPanelDown(channel) {
     try {
         const config = readJSON('config.json') || {};
@@ -273,10 +290,8 @@ async function moveAfkPanelDown(channel) {
         const afkEmbed = afkMsg.embeds[0];
         const afkBtns = afkMsg.components;
 
-        // Удаляем старое сообщение
         await afkMsg.delete().catch(() => {});
 
-        // Отправляем новое внизу
         const newMsg = await ch.send({ embeds: [afkEmbed], components: afkBtns });
 
         config.afkMessageId = newMsg.id;
@@ -589,8 +604,9 @@ client.on('interactionCreate', async interaction => {
 
             if (cid === 'create_apply_ticket') { await createApplyTicket(interaction); return; }
 
+            // Переключение статуса (только админ)
             if (cid === 'toggle_apply_status') {
-                if (!interaction.member.roles.cache.has(getEnv('COMMUNITY_ADMIN_ROLE_ID'))) return interaction.reply({ content: '⛔', ephemeral: true });
+                if (!isAdmin(interaction.member)) return interaction.reply({ content: '⛔ Только администратор.', ephemeral: true });
                 const emb = interaction.message.embeds[0];
                 const isOpen = emb.description?.includes('🟢');
                 await interaction.update({
@@ -603,6 +619,7 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
+            // Принять/отклонить (админ И стафф)
             if (cid.startsWith('apply_accept_')) { await acceptApply(interaction, cid.split('_')[2]); return; }
             if (cid.startsWith('apply_deny_')) { await denyApply(interaction, cid.split('_')[2]); return; }
 
