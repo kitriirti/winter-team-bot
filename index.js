@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionFlagsBits, Collection } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionFlagsBits, Collection, REST, Routes } = require('discord.js');
 const dotenv = require('dotenv');
 dotenv.config();
 
@@ -12,27 +12,121 @@ const client = new Client({
     ]
 });
 
-// Конфигурация
+// Конфигурация с проверкой переменных
 const CONFIG = {
     MIN_HOURS: 3000,
     MIN_AGE: 15,
     MIN_ONLINE: 6,
-    TICKET_CATEGORY: process.env.TICKET_CATEGORY_ID,
-    STAFF_ROLE: process.env.STAFF_ROLE_ID,
-    LOG_CHANNEL: process.env.LOG_CHANNEL_ID,
-    GUILD_ID: process.env.GUILD_ID
+    TICKET_CATEGORY: process.env.TICKET_CATEGORY_ID || null,
+    STAFF_ROLE: process.env.STAFF_ROLE_ID || null,
+    LOG_CHANNEL: process.env.LOG_CHANNEL_ID || null,
+    GUILD_ID: process.env.GUILD_ID || null
 };
+
+// Проверка обязательных переменных
+if (!process.env.DISCORD_TOKEN) {
+    console.error('❌ ОШИБКА: DISCORD_TOKEN не найден!');
+    process.exit(1);
+}
+
+if (!CONFIG.GUILD_ID) {
+    console.error('❌ ОШИБКА: GUILD_ID не найден!');
+    process.exit(1);
+}
+
+if (!CONFIG.STAFF_ROLE) {
+    console.error('❌ ОШИБКА: STAFF_ROLE_ID не найден!');
+    process.exit(1);
+}
+
+console.log('✅ Переменные окружения загружены');
 
 // Хранилище тикетов
 const tickets = new Collection();
 const ticketChannels = new Collection();
+let recruitmentOpen = true;
+
+// Функция для регистрации команд
+async function registerCommands() {
+    const commands = [
+        {
+            name: 'panel',
+            description: '📋 Создать панель управления (только для стаффа)',
+            options: [
+                {
+                    name: 'type',
+                    description: 'Тип панели',
+                    type: 3, // STRING
+                    required: true,
+                    choices: [
+                        {
+                            name: '🎫 Тикеты',
+                            value: 'ticket'
+                        },
+                        {
+                            name: '📊 Статус',
+                            value: 'status'
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            name: 'recruitment',
+            description: '🔓 Открыть или закрыть набор в клан (только для стаффа)'
+        },
+        {
+            name: 'status',
+            description: '📊 Проверить статус набора в клан'
+        },
+        {
+            name: 'tickets',
+            description: '📋 Показать список активных тикетов (только для стаффа)'
+        }
+    ];
+
+    try {
+        console.log('🔄 Регистрация команд...');
+        
+        const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+        
+        // Регистрируем команды для конкретного сервера
+        await rest.put(
+            Routes.applicationGuildCommands(client.user.id, CONFIG.GUILD_ID),
+            { body: commands }
+        );
+        
+        console.log(`✅ Зарегистрировано ${commands.length} команд для сервера!`);
+        
+    } catch (error) {
+        console.error('❌ Ошибка регистрации команд:', error);
+    }
+}
 
 client.once('ready', async () => {
-    console.log(`✅ Бот ${client.user.tag} запущен!`);
+    console.log(`✅ Бот ${client.user.tag} успешно запущен!`);
     
     const guild = client.guilds.cache.get(CONFIG.GUILD_ID);
     if (!guild) {
-        console.error('❌ Сервер не найден!');
+        console.error(`❌ Сервер с ID ${CONFIG.GUILD_ID} не найден!`);
+        return;
+    }
+
+    console.log(`✅ Найден сервер: ${guild.name}`);
+
+    // Регистрируем команды
+    await registerCommands();
+
+    // Проверяем роль стаффа
+    try {
+        const staffRole = await guild.roles.fetch(CONFIG.STAFF_ROLE);
+        if (!staffRole) {
+            console.error(`❌ Роль с ID ${CONFIG.STAFF_ROLE} не найдена!`);
+            return;
+        }
+        console.log(`✅ Найдена роль стаффа: ${staffRole.name}`);
+    } catch (error) {
+        console.error('❌ Ошибка при проверке роли стаффа:', error);
         return;
     }
 
@@ -40,6 +134,7 @@ client.once('ready', async () => {
     let ticketChannel = guild.channels.cache.find(ch => ch.name === '🎫-tickets');
     if (!ticketChannel) {
         try {
+            console.log('📝 Создаю канал для тикетов...');
             ticketChannel = await guild.channels.create({
                 name: '🎫-tickets',
                 type: ChannelType.GuildText,
@@ -54,25 +149,189 @@ client.once('ready', async () => {
                     }
                 ]
             });
-            console.log('📝 Канал для тикетов создан');
+            console.log('✅ Канал для тикетов создан');
         } catch (error) {
             console.error('❌ Ошибка создания канала:', error);
             return;
         }
+    } else {
+        console.log('✅ Канал для тикетов найден');
     }
 
-    // Создаем кнопки управления
-    await createTicketPanel(ticketChannel);
+    // Создаем панель тикетов в канале по умолчанию
+    try {
+        await createTicketPanel(ticketChannel);
+        console.log('✅ Панель тикетов создана');
+    } catch (error) {
+        console.error('❌ Ошибка создания панели:', error);
+    }
     
     // Устанавливаем статус
     client.user.setPresence({
-        activities: [{ name: 'RUNA | /ticket', type: 3 }],
+        activities: [{ name: 'RUNA | /panel ticket', type: 3 }],
         status: 'online'
     });
 
-    console.log('🎫 Бот готов к работе!');
+    console.log('🎫 Бот полностью готов к работе!');
+    console.log('📋 Доступные команды:');
+    console.log('  /panel ticket - Создать панель тикетов');
+    console.log('  /panel status - Показать статус');
+    console.log('  /recruitment - Открыть/закрыть набор');
+    console.log('  /status - Проверить статус');
+    console.log('  /tickets - Список активных тикетов');
 });
 
+// Обработка команд (slash commands)
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isCommand()) return;
+
+    const { commandName, options } = interaction;
+
+    // Проверка прав для команд стаффа
+    const isStaff = interaction.member.roles.cache.has(CONFIG.STAFF_ROLE);
+
+    // Команда /panel
+    if (commandName === 'panel') {
+        if (!isStaff) {
+            return interaction.reply({ 
+                content: '❌ У вас нет прав для использования этой команды! Требуется роль стаффа.', 
+                ephemeral: true 
+            });
+        }
+
+        const type = options.getString('type');
+        const channel = interaction.channel;
+
+        if (type === 'ticket') {
+            await createTicketPanel(channel);
+            await interaction.reply({ 
+                content: '✅ Панель тикетов создана/обновлена в этом канале!', 
+                ephemeral: true 
+            });
+        } else if (type === 'status') {
+            await createStatusPanel(channel);
+            await interaction.reply({ 
+                content: '✅ Панель статуса создана/обновлена в этом канале!', 
+                ephemeral: true 
+            });
+        }
+    }
+
+    // Команда /recruitment
+    if (commandName === 'recruitment') {
+        if (!isStaff) {
+            return interaction.reply({ 
+                content: '❌ У вас нет прав для использования этой команды! Требуется роль стаффа.', 
+                ephemeral: true 
+            });
+        }
+
+        await toggleRecruitment(interaction);
+    }
+
+    // Команда /status
+    if (commandName === 'status') {
+        await showStatus(interaction);
+    }
+
+    // Команда /tickets
+    if (commandName === 'tickets') {
+        if (!isStaff) {
+            return interaction.reply({ 
+                content: '❌ У вас нет прав для использования этой команды! Требуется роль стаффа.', 
+                ephemeral: true 
+            });
+        }
+
+        await showTicketsList(interaction);
+    }
+});
+
+// Функция создания панели статуса
+async function createStatusPanel(channel) {
+    const status = recruitmentOpen ? '🔓 ОТКРЫТ' : '🔒 ЗАКРЫТ';
+    const embed = new EmbedBuilder()
+        .setTitle('📊 Статус клана RUNA')
+        .setDescription('Актуальная информация о клане')
+        .setColor(recruitmentOpen ? '#00FF00' : '#FF0000')
+        .addFields(
+            { name: '🎯 Набор в клан', value: `**${status}**`, inline: false },
+            { name: '📋 Требования:', value: `• Минимальный онлайн: ${CONFIG.MIN_HOURS} часов\n• Минимальный возраст: ${CONFIG.MIN_AGE} лет\n• Онлайн в день: от ${CONFIG.MIN_ONLINE} часов`, inline: false },
+            { name: '👥 Активных тикетов', value: `${tickets.filter(t => t.status === 'open').size}`, inline: true },
+            { name: '📝 Всего тикетов', value: `${tickets.size}`, inline: true }
+        )
+        .setTimestamp()
+        .setFooter({ text: 'RUNA Clan • 2026' });
+
+    const row = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder()
+                .setCustomId('refresh_status')
+                .setLabel('🔄 Обновить')
+                .setStyle(ButtonStyle.Secondary)
+        );
+
+    // Очищаем старые сообщения бота
+    try {
+        const messages = await channel.messages.fetch({ limit: 20 });
+        const botMessages = messages.filter(msg => msg.author.id === client.user.id);
+        for (const msg of botMessages.values()) {
+            await msg.delete();
+        }
+    } catch (error) {
+        console.warn('⚠️ Не удалось очистить сообщения:', error.message);
+    }
+
+    await channel.send({ embeds: [embed], components: [row] });
+}
+
+// Функция показа статуса
+async function showStatus(interaction) {
+    const status = recruitmentOpen ? '🔓 ОТКРЫТ' : '🔒 ЗАКРЫТ';
+    const embed = new EmbedBuilder()
+        .setTitle('📊 Статус набора в RUNA')
+        .setDescription(`Набор в клан: **${status}**`)
+        .setColor(recruitmentOpen ? '#00FF00' : '#FF0000')
+        .addFields(
+            { name: '📋 Требования:', value: `• Минимальный онлайн: ${CONFIG.MIN_HOURS} часов\n• Минимальный возраст: ${CONFIG.MIN_AGE} лет\n• Онлайн в день: от ${CONFIG.MIN_ONLINE} часов`, inline: false },
+            { name: '👥 Активных тикетов:', value: `${tickets.filter(t => t.status === 'open').size}`, inline: true },
+            { name: '📝 Всего тикетов:', value: `${tickets.size}`, inline: true }
+        )
+        .setTimestamp()
+        .setFooter({ text: 'RUNA Clan • 2026' });
+
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+// Функция показа списка тикетов
+async function showTicketsList(interaction) {
+    const openTickets = tickets.filter(t => t.status === 'open');
+    
+    if (openTickets.size === 0) {
+        return interaction.reply({
+            content: '📭 Активных тикетов нет.',
+            ephemeral: true
+        });
+    }
+
+    const embed = new EmbedBuilder()
+        .setTitle('📋 Список активных тикетов')
+        .setColor('#0099FF')
+        .setDescription(`Всего активных тикетов: ${openTickets.size}`)
+        .setTimestamp();
+
+    let ticketList = '';
+    openTickets.forEach((ticket, index) => {
+        const user = interaction.guild.members.cache.get(ticket.userId);
+        ticketList += `${index + 1}. <#${ticket.channelId}> - ${user ? user.user.tag : 'Неизвестный пользователь'}\n`;
+    });
+
+    embed.addFields({ name: 'Тикеты', value: ticketList || 'Нет данных', inline: false });
+
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+// Функция создания панели тикетов
 async function createTicketPanel(channel) {
     const embed = new EmbedBuilder()
         .setTitle('🎫 Создание тикета в клан RUNA')
@@ -80,6 +339,7 @@ async function createTicketPanel(channel) {
         .setColor('#FF6B00')
         .addFields(
             { name: '📋 Требования:', value: `• Минимальный онлайн: ${CONFIG.MIN_HOURS} часов\n• Минимальный возраст: ${CONFIG.MIN_AGE} лет\n• Онлайн в день: от ${CONFIG.MIN_ONLINE} часов`, inline: false },
+            { name: '📌 Статус набора:', value: recruitmentOpen ? '🔓 **ОТКРЫТ**' : '🔒 **ЗАКРЫТ**', inline: false },
             { name: '📌 Важно:', value: 'Заполните все поля анкеты. Неверные данные приведут к автоматическому отклонению.', inline: false }
         )
         .setFooter({ text: 'RUNA Clan • 2026' });
@@ -89,31 +349,79 @@ async function createTicketPanel(channel) {
             new ButtonBuilder()
                 .setCustomId('create_ticket')
                 .setLabel('📩 Подать заявку')
-                .setStyle(ButtonStyle.Primary),
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(!recruitmentOpen),
             new ButtonBuilder()
                 .setCustomId('toggle_recruitment')
-                .setLabel('🔓 Открыть/Закрыть набор')
+                .setLabel(recruitmentOpen ? '🔒 Закрыть набор' : '🔓 Открыть набор')
                 .setStyle(ButtonStyle.Secondary)
         );
 
-    // Очищаем старые сообщения
-    const messages = await channel.messages.fetch({ limit: 10 });
-    for (const msg of messages.values()) {
-        if (msg.author.id === client.user.id) {
+    // Очищаем старые сообщения бота
+    try {
+        const messages = await channel.messages.fetch({ limit: 20 });
+        const botMessages = messages.filter(msg => msg.author.id === client.user.id);
+        for (const msg of botMessages.values()) {
             await msg.delete();
         }
+    } catch (error) {
+        console.warn('⚠️ Не удалось очистить сообщения:', error.message);
     }
 
     await channel.send({ embeds: [embed], components: [row] });
-    console.log('📋 Панель тикетов обновлена');
 }
+
+// Функция для переключения набора
+async function toggleRecruitment(interaction) {
+    recruitmentOpen = !recruitmentOpen;
+    const status = recruitmentOpen ? '🔓 ОТКРЫТ' : '🔒 ЗАКРЫТ';
+    
+    await interaction.reply({
+        content: `✅ Набор в клан теперь ${status}!`,
+        ephemeral: true
+    });
+
+    // Обновляем все панели тикетов на сервере
+    const guild = interaction.guild;
+    const channels = guild.channels.cache.filter(ch => 
+        ch.type === ChannelType.GuildText && 
+        ch.permissionsFor(guild.members.me).has(PermissionFlagsBits.ViewChannel)
+    );
+
+    for (const channel of channels.values()) {
+        try {
+            const messages = await channel.messages.fetch({ limit: 5 });
+            const botMessages = messages.filter(msg => 
+                msg.author.id === client.user.id && 
+                msg.embeds.length > 0 && 
+                msg.embeds[0].title && 
+                msg.embeds[0].title.includes('Создание тикета')
+            );
+            
+            for (const msg of botMessages.values()) {
+                await msg.delete();
+                await createTicketPanel(channel);
+                break;
+            }
+        } catch (error) {
+            // Игнорируем ошибки
+        }
+    }
+}
+
+// Функция проверки статуса набора
+async function checkRecruitmentStatus() {
+    return recruitmentOpen;
+}
+
+// Остальной код для кнопок, модальных окон и т.д.
+// (все функции из предыдущего ответа остаются без изменений)
 
 // Модальное окно для создания тикета
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
 
     if (interaction.customId === 'create_ticket') {
-        // Проверяем открыт ли набор
         const isOpen = await checkRecruitmentStatus();
         if (!isOpen) {
             return interaction.reply({ 
@@ -202,6 +510,24 @@ client.on('interactionCreate', async interaction => {
         await toggleRecruitment(interaction);
     }
 
+    if (interaction.customId === 'refresh_status') {
+        const status = recruitmentOpen ? '🔓 ОТКРЫТ' : '🔒 ЗАКРЫТ';
+        const embed = new EmbedBuilder()
+            .setTitle('📊 Статус клана RUNA')
+            .setDescription('Актуальная информация о клане')
+            .setColor(recruitmentOpen ? '#00FF00' : '#FF0000')
+            .addFields(
+                { name: '🎯 Набор в клан', value: `**${status}**`, inline: false },
+                { name: '📋 Требования:', value: `• Минимальный онлайн: ${CONFIG.MIN_HOURS} часов\n• Минимальный возраст: ${CONFIG.MIN_AGE} лет\n• Онлайн в день: от ${CONFIG.MIN_ONLINE} часов`, inline: false },
+                { name: '👥 Активных тикетов', value: `${tickets.filter(t => t.status === 'open').size}`, inline: true },
+                { name: '📝 Всего тикетов', value: `${tickets.size}`, inline: true }
+            )
+            .setTimestamp()
+            .setFooter({ text: 'RUNA Clan • 2026' });
+
+        await interaction.update({ embeds: [embed] });
+    }
+
     // Кнопки управления тикетом
     if (['accept_ticket', 'call_ticket', 'close_ticket', 'delete_ticket'].includes(interaction.customId)) {
         await handleTicketAction(interaction);
@@ -249,7 +575,7 @@ client.on('interactionCreate', async interaction => {
 
     // Создаем тикет
     const guild = interaction.guild;
-    const category = guild.channels.cache.get(CONFIG.TICKET_CATEGORY);
+    const category = CONFIG.TICKET_CATEGORY ? guild.channels.cache.get(CONFIG.TICKET_CATEGORY) : null;
     
     try {
         const channel = await guild.channels.create({
@@ -326,19 +652,21 @@ client.on('interactionCreate', async interaction => {
         });
 
         // Логируем в лог-канал
-        const logChannel = guild.channels.cache.get(CONFIG.LOG_CHANNEL);
-        if (logChannel) {
-            const logEmbed = new EmbedBuilder()
-                .setTitle('📝 Создан новый тикет')
-                .setColor('#FFA500')
-                .addFields(
-                    { name: 'Пользователь', value: `${interaction.user}`, inline: true },
-                    { name: 'Канал', value: `<#${channel.id}>`, inline: true },
-                    { name: 'Время', value: new Date().toLocaleString(), inline: true }
-                )
-                .setTimestamp();
-            
-            await logChannel.send({ embeds: [logEmbed] });
+        if (CONFIG.LOG_CHANNEL) {
+            const logChannel = guild.channels.cache.get(CONFIG.LOG_CHANNEL);
+            if (logChannel) {
+                const logEmbed = new EmbedBuilder()
+                    .setTitle('📝 Создан новый тикет')
+                    .setColor('#FFA500')
+                    .addFields(
+                        { name: 'Пользователь', value: `${interaction.user}`, inline: true },
+                        { name: 'Канал', value: `<#${channel.id}>`, inline: true },
+                        { name: 'Время', value: new Date().toLocaleString(), inline: true }
+                    )
+                    .setTimestamp();
+                
+                await logChannel.send({ embeds: [logEmbed] });
+            }
         }
 
         await interaction.editReply({
@@ -455,30 +783,6 @@ async function handleTicketAction(interaction) {
             }, 3000);
             break;
         }
-    }
-}
-
-// Функции управления набором
-let recruitmentOpen = true;
-
-async function checkRecruitmentStatus() {
-    return recruitmentOpen;
-}
-
-async function toggleRecruitment(interaction) {
-    recruitmentOpen = !recruitmentOpen;
-    const status = recruitmentOpen ? '🔓 ОТКРЫТ' : '🔒 ЗАКРЫТ';
-    
-    await interaction.reply({
-        content: `✅ Набор в клан теперь ${status}!`,
-        ephemeral: true
-    });
-
-    // Обновляем панель
-    const guild = interaction.guild;
-    const ticketChannel = guild.channels.cache.find(ch => ch.name === '🎫-tickets');
-    if (ticketChannel) {
-        await createTicketPanel(ticketChannel);
     }
 }
 
