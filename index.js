@@ -15,8 +15,31 @@ const {
     Routes 
 } = require('discord.js');
 const dotenv = require('dotenv');
+const express = require('express');
 dotenv.config();
 
+// ========== ВЕБ-СЕРВЕР ДЛЯ RENDER ==========
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+app.get('/', (req, res) => {
+    res.send('✅ Бот RUNA работает 24/7!');
+});
+
+app.get('/health', (req, res) => {
+    res.status(200).json({ 
+        status: 'online', 
+        uptime: process.uptime(),
+        tickets: tickets ? tickets.size : 0,
+        timestamp: new Date().toISOString()
+    });
+});
+
+const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Веб-сервер запущен на порту ${PORT}`);
+});
+
+// ========== КЛИЕНТ DISCORD ==========
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -82,11 +105,6 @@ async function sendLog(guild, action, user, hours = null, age = null, staff = nu
             title = '📝 Создан тикет';
             description = `**Пользователь:** ${user}\n**Часов:** ${hours}\n**Возраст:** ${age}`;
             color = '#00FF00';
-            break;
-        case 'review':
-            title = '📋 На рассмотрении';
-            description = `**Пользователь:** ${user}\n**Стафф:** ${staff}\n**Тикет отправлен на рассмотрение**`;
-            color = '#FFA500';
             break;
         case 'accept':
             title = '✅ Тикет принят';
@@ -672,7 +690,6 @@ client.on('interactionCreate', async interaction => {
             data: { hours, age, online, call, role }
         });
 
-        // ========== ОСНОВНОЙ EMBED ТИКЕТА ==========
         const embed = new EmbedBuilder()
             .setTitle('Новая заявка в RUNA')
             .setColor('#00FF00')
@@ -714,7 +731,6 @@ client.on('interactionCreate', async interaction => {
             components: [row] 
         });
 
-        // ========== ЛОГ: СОЗДАН ТИКЕТ ==========
         await sendLog(guild, 'create', interaction.user, hours, age);
 
         await interaction.editReply({
@@ -764,7 +780,6 @@ async function handleTicketAction(interaction) {
 
     switch (interaction.customId) {
         case 'accept_ticket': {
-            // ========== ЛОГ: ПРИНЯТ ТИКЕТ ==========
             await sendLog(guild, 'accept', user.user, null, null, interaction.user);
             
             await interaction.editReply({
@@ -791,10 +806,7 @@ async function handleTicketAction(interaction) {
 
             try {
                 await user.voice.setChannel(voiceState.channel);
-                
-                // ========== ЛОГ: ВЫЗОВ НА ОБЗВОН ==========
                 await sendLog(guild, 'call', user.user, null, null, interaction.user);
-                
                 await interaction.editReply({
                     content: `📞 ${user} вызван в ${voiceState.channel}!`
                 });
@@ -807,7 +819,6 @@ async function handleTicketAction(interaction) {
         }
 
         case 'close_ticket': {
-            // ========== ЛОГ: ЗАКРЫТ ТИКЕТ ==========
             const closer = interaction.user.id === ticketInfo.userId ? user.user : interaction.user;
             await sendLog(guild, 'close', user.user, null, null, closer);
             
@@ -828,7 +839,6 @@ async function handleTicketAction(interaction) {
         }
 
         case 'delete_ticket': {
-            // ========== ЛОГ: УДАЛЕН ТИКЕТ ==========
             await sendLog(guild, 'delete', user.user, null, null, interaction.user);
             
             await interaction.editReply({
@@ -844,13 +854,44 @@ async function handleTicketAction(interaction) {
     }
 }
 
+// ========== АВТОМАТИЧЕСКОЕ ВОССТАНОВЛЕНИЕ ==========
+client.on('shardDisconnect', (event, id) => {
+    console.log(`⚠️ Шард ${id} отключен. Переподключение...`);
+});
+
+client.on('shardReconnecting', (id) => {
+    console.log(`🔄 Шард ${id} переподключается...`);
+});
+
+client.on('shardReady', (id) => {
+    console.log(`✅ Шард ${id} готов!`);
+});
+
+// ========== ОБРАБОТКА ОШИБОК ==========
+client.on('error', error => {
+    console.error('❌ Ошибка клиента:', error);
+});
+
+process.on('unhandledRejection', (error) => {
+    console.error('❌ Необработанная ошибка:', error);
+});
+
+process.on('SIGINT', () => {
+    console.log('🛑 Получен SIGINT. Завершаю работу...');
+    server.close(() => {
+        client.destroy();
+        process.exit(0);
+    });
+});
+
 // ========== ЗАПУСК БОТА ==========
 client.once('ready', async () => {
     console.log(`✅ Бот ${client.user.tag} запущен!`);
+    console.log(`📊 На серверах: ${client.guilds.cache.size}`);
     
     const guild = client.guilds.cache.get(CONFIG.GUILD_ID);
     if (!guild) {
-        console.error(`❌ Сервер не найден!`);
+        console.error(`❌ Сервер с ID ${CONFIG.GUILD_ID} не найден!`);
         return;
     }
 
@@ -864,7 +905,7 @@ client.once('ready', async () => {
         }
         console.log(`✅ Роль стаффа: ${staffRole.name}`);
     } catch (error) {
-        console.error('❌ Ошибка:', error);
+        console.error('❌ Ошибка проверки роли:', error);
         return;
     }
 
@@ -876,11 +917,10 @@ client.once('ready', async () => {
         status: 'online'
     });
 
-    console.log('🎫 Бот готов!');
+    console.log('🎫 Бот готов к работе 24/7!');
     console.log('📋 Команды: /panel ticket, /panel status, /recruitment, /status, /tickets, /clearpanel, /register');
+    console.log(`🌐 Веб-сервер: http://localhost:${PORT}`);
 });
 
-client.on('error', console.error);
-process.on('unhandledRejection', console.error);
-
+// ========== ЗАПУСК ==========
 client.login(process.env.DISCORD_TOKEN);
